@@ -1,0 +1,9 @@
+*.elf
+*.bin
+*.asm
+*.o
+*.d
+*.log
+*.pcap
+__pycache__/
+.DS_Store
