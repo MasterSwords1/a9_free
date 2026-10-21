@@ -254,6 +254,14 @@ that need extra hardware are marked.
 | **System** | Filesystem, firmware over-the-air updates, DMA (IFC) driver | None (open filesystems such as littlefs can be reused) |
 | **Verification gaps** | GPADC on a known voltage, PWM duty on a pin, sleep current | A jumper wire; a USB power meter |
 
+### Known issues
+
+- After long test sessions some statics have been seen overwritten with SRAM
+  addresses (reset cause, GPADC calibration), which points to a memory-corruption bug
+  in the firmware; under investigation.
+- Builds made with a stock GCC 15 (`TOOLCHAIN=stock`) hang in some shell commands
+  (`alarm in`, `flash test`, `adc`); CSDTK builds are the reference.
+
 Rough progress, weighted by effort to reach parity with the vendor firmware: tooling,
 boot and OS 100%; core platform drivers about 85%; peripheral drivers about 10%; modem
 and networking 0%. That is **about 25% overall**, and about 65% for using the board as
@@ -265,9 +273,15 @@ a general-purpose microcontroller.
 
 ### Requirements
 
-- A MIPS cross compiler: `mips-elf-gcc` from CSDTK (the Makefile defaults to
-  `CSDTK_PATH=~/Desktop/GPRS_C_SDK/CSDTK`), or another bare-metal MIPS GCC that
-  accepts `-march=xcpu`.
+- A MIPS cross compiler. a9_free uses no SDK headers or vendor libraries, only a
+  compiler:
+  - **CSDTK's `mips-elf-gcc`** (GCC 4.4 with RDA's `-march=xcpu`) is the toolchain
+    verified on hardware and the default. The Makefile looks for it at
+    `../GPRS_C_SDK/CSDTK`, or set `CSDTK=/path/to/CSDTK`.
+  - **A stock bare-metal GCC** (`make TOOLCHAIN=stock`, `mipsel-elf-gcc` from PATH)
+    is *experimental*. The XCPU runs the MIPS I integer ISA, and `-march=xcpu` and
+    `-march=mips1` emit the same instruction mix. A GCC 15 build boots and runs,
+    but still hangs in some shell commands on hardware.
 - Python 3 with `pyserial` (and `pyelftools` for ELF images).
 - An A9/A9G board on `/dev/ttyUSB0` through the debug port's USB-UART. Your user needs
   access to the tty; on some distributions it belongs to the `uucp` group, not
@@ -340,20 +354,21 @@ a9_free/
 │   ├── uart.c            debug-UART console and SXS input mailbox
 │   ├── uart2.c, gps.c    UART2 and GPS power/reader
 │   └── nmea.c            NMEA parser
+├── libc/                 minimal freestanding stdlib.h/string.h (for stock toolchains)
 ├── tests/                host-side unit tests
 ├── tools/
 │   ├── a9g_flasher.py    flasher / monitor / shell client
 │   └── ramrun/           open SRAM flash programmer
-└── GPS_NOTES.md          GPS investigation notes
+├── GPS_NOTES.md          GPS investigation notes
+└── LICENSE               MIT
 ```
 
 ---
 
 ## License and acknowledgements
 
-- FreeRTOS kernel: MIT license (Amazon / Real Time Engineers).
-- The a9_free code (port, drivers, flasher, programmer) has not been given a license
-  yet. One will be chosen before the repository is opened up.
+- a9_free (port, drivers, flasher, programmer): [MIT license](LICENSE).
+- FreeRTOS kernel (`kernel/`): MIT license, © Amazon.com, Inc. or its affiliates.
 - The GPRS C SDK and the vendor firmware are © Ai-Thinker / RDA and are not included
   here. They were studied to learn how the hardware works.
 - Reverse engineered with [REA](https://github.com/morluto/rea), the CSDTK binutils

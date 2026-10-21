@@ -9,6 +9,10 @@ MEMORY
 
 SECTIONS
 {
+    /DISCARD/ : {
+        *(.MIPS.abiflags)
+    }
+
     .context : {
         LONG(0x000000FF)
         LONG(_start)

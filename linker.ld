@@ -9,6 +9,12 @@ MEMORY
 
 SECTIONS
 {
+    /* Newer binutils emit .MIPS.abiflags; it must not land between the boot
+     * header and _start (the ROM jumps to 0x88000010). */
+    /DISCARD/ : {
+        *(.MIPS.abiflags)
+    }
+
     .boot_hdr : {
         KEEP(*(.boot_header))
     } > FLASH

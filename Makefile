@@ -1,19 +1,45 @@
 # =============================================================================
-# a9_free: 100% Open-Source FreeRTOS Firmware for RDA8955 (Ai-Thinker A9 / A9G)
+# a9_free: open-source firmware for the RDA8955 (Ai-Thinker A9 / A9G)
 # =============================================================================
+#
+# Only the CSDTK *compiler* is used (mips-elf-gcc/objcopy/objdump); no SDK
+# headers or vendor libraries. CSDTK's GCC 4.4 is the toolchain verified on
+# hardware and the default:
+#
+#   make                                  # CSDTK at ../GPRS_C_SDK/CSDTK
+#   make CSDTK=/path/to/CSDTK
+#
+# A stock bare-metal MIPS GCC also builds the firmware (the XCPU runs the MIPS I
+# integer ISA; -march=xcpu and -march=mips1 emit the same instruction mix), but
+# a GCC 15 build still hangs in some shell commands on hardware: EXPERIMENTAL.
+#
+#   make TOOLCHAIN=stock                  # mipsel-elf-gcc from PATH
+#   make TOOLCHAIN=stock CROSS=mips-elf- ARCH="-EL -march=mips1"
 
-CSDTK_PATH ?= ../GPRS_C_SDK/CSDTK
+TOOLCHAIN ?= csdtk
+CSDTK     ?= $(abspath $(dir $(lastword $(MAKEFILE_LIST)))../GPRS_C_SDK/CSDTK)
 
-CC      := LD_LIBRARY_PATH=$(CSDTK_PATH)/lib:$(CSDTK_PATH)/lib32:$$LD_LIBRARY_PATH $(CSDTK_PATH)/bin/mips-elf-gcc
-OBJCOPY := $(CSDTK_PATH)/bin/mips-elf-objcopy
-OBJDUMP := $(CSDTK_PATH)/bin/mips-elf-objdump
+ifeq ($(TOOLCHAIN),csdtk)
+ifeq ($(wildcard $(CSDTK)/bin/mips-elf-gcc),)
+$(error CSDTK not found at $(CSDTK); set CSDTK=/path/to/CSDTK or use TOOLCHAIN=stock)
+endif
+CROSS := LD_LIBRARY_PATH=$(CSDTK)/lib:$(CSDTK)/lib32:$$LD_LIBRARY_PATH $(CSDTK)/bin/mips-elf-
+ARCH  := -EL -march=xcpu -mtune=xcpu -Wa,-march=xcpu,-mtune=xcpu
+else
+CROSS ?= mipsel-elf-
+ARCH  ?= -march=mips1
+endif
+
+CC      := $(CROSS)gcc
+OBJCOPY := $(CROSS)objcopy
+OBJDUMP := $(CROSS)objdump
 
 PORT    ?= /dev/ttyUSB0
 BAUD    ?= 921600
 FLASHER := python3 tools/a9g_flasher.py --port $(PORT) --baud $(BAUD) --ramrun tools/ramrun/open_ramrun_clean.elf
 
-CFLAGS  := -std=gnu99 -EL -march=xcpu -mtune=xcpu -Wa,-march=xcpu,-mtune=xcpu -O2 -nostdlib -nostartfiles -ffreestanding -mno-abicalls -fno-pic -G0
-CFLAGS  += -I. -Iport -Isrc -Ikernel/include
+CFLAGS  := -std=gnu99 $(ARCH) -O2 -nostdlib -nostartfiles -ffreestanding -mno-abicalls -fno-pic -G0
+CFLAGS  += -I. -Iport -Isrc -Ikernel/include -Ilibc
 
 KERNEL_SRCS := kernel/tasks.c \
                kernel/list.c
@@ -41,7 +67,7 @@ TARGET := a9_free
 all: $(TARGET).bin
 
 $(TARGET).elf: $(APP_SRCS) $(KERNEL_SRCS) linker.ld
-	$(CC) $(CFLAGS) -EL -Wl,-N -T linker.ld $(APP_SRCS) $(KERNEL_SRCS) -o $@
+	$(CC) $(CFLAGS) -Wl,-N -T linker.ld $(APP_SRCS) $(KERNEL_SRCS) -o $@
 
 $(TARGET).bin: $(TARGET).elf
 	$(OBJCOPY) -O binary $< $@
