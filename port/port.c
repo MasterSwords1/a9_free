@@ -67,22 +67,38 @@ StackType_t *pxPortInitialiseStack(StackType_t *pxTopOfStack, TaskFunction_t pxC
 #define REG_TIMER_IRQ_CLR      (*(volatile uint32_t *)(REG_TIMER_BASE + 0x20))
 #define REG_TIMER_IRQ_CAUSE    (*(volatile uint32_t *)(REG_TIMER_BASE + 0x24))
 
+#define OSTIMER_ENABLE         (1u << 24)
+#define OSTIMER_REPEAT         (1u << 28)
+#define OSTIMER_LOAD           (1u << 30)
+#define OSTIMER_CLOCK_HZ       16384u
+
+/* Bresenham: periods of floor(16384/HZ) or +1 counts, averaging 16384/HZ */
+static uint32_t prvNextTickPeriod(void)
+{
+    static uint32_t acc;
+    uint32_t period = OSTIMER_CLOCK_HZ / configTICK_RATE_HZ;
+    acc += OSTIMER_CLOCK_HZ % configTICK_RATE_HZ;
+    if (acc >= configTICK_RATE_HZ) {
+        acc -= configTICK_RATE_HZ;
+        period++;
+    }
+    return period;
+}
+
 static void prvSetupTimerInterrupt(void)
 {
     /* Clear any pending OS timer IRQ */
     REG_TIMER_IRQ_CLR = 1;
 
     /*
-     * 16,384 Hz clock:
-     * LoadVal = 16384 / configTICK_RATE_HZ (e.g., 164 for 100 Hz = 10 ms tick)
-     * Bit 30: Load (immediate)
-     * Bit 28: Repeat (auto-reload)
-     * Bit 24: Enable
+     * 16,384 Hz clock; the timer period is LoadVal + 1 counts (measured: a
+     * LoadVal of 163 gave 99.90 Hz). 16384 / configTICK_RATE_HZ is not an
+     * integer, so the per-tick period is dithered in the ISR (see
+     * prvNextTickPeriod) to average exactly configTICK_RATE_HZ.
+     * Bit 28: Repeat (auto-reload), bit 24: Enable, bit 30: Load now.
      */
-    uint32_t load_val = (16384 / configTICK_RATE_HZ);
-    if (load_val == 0) load_val = 1;
-
-    REG_OSTIMER_CTRL = (1 << 30) | (1 << 28) | (1 << 24) | (load_val & 0x00FFFFFF);
+    REG_OSTIMER_CTRL = OSTIMER_LOAD | OSTIMER_REPEAT | OSTIMER_ENABLE |
+                       ((prvNextTickPeriod() - 1) & 0x00FFFFFF);
 
     /* Unmask OSTimer interrupt in Timer module */
     REG_TIMER_IRQ_MASK_SET = 1;
@@ -109,6 +125,11 @@ void prvSystemInterruptHandler(void)
     if (cause & (1 << 10)) {
         /* Clear timer IRQ in Timer module */
         REG_TIMER_IRQ_CLR = 1;
+
+        /* Next period's reload value; without OSTIMER_LOAD the running
+         * period is not disturbed */
+        REG_OSTIMER_CTRL = OSTIMER_REPEAT | OSTIMER_ENABLE |
+                           ((prvNextTickPeriod() - 1) & 0x00FFFFFF);
 
         /* Increment FreeRTOS tick and switch context if a higher priority task is unblocked */
         if (xTaskIncrementTick() != pdFALSE) {

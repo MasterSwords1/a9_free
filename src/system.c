@@ -26,7 +26,14 @@
 #define WDT_RELOAD             (1u << 16)
 #define WDT_LOADVAL_MAX        0x00FFFFFFu   /* 32 kHz clocks */
 
+#define REG_SYS_IRQ_WAKEUP_MASK (*(volatile uint32_t *)0xA1A01018)
+#define REG_SYS_IRQ_CPU_SLEEP   (*(volatile uint32_t *)0xA1A0101C)
+#define WAKE_SOURCES            ((1u << 7) | (1u << 10) | (1u << 11))   /* GPIO, OS timer, calendar */
+#define HW_TIMER_UPTIME         (*(volatile uint32_t *)0xA1A02014)   /* 16384 Hz */
+
 static uint32_t s_reset_cause;
+static volatile int      s_sleep_on = 1;
+static volatile uint32_t s_slept, s_naps, s_stats_t0;
 static uint32_t s_wdt_timeout_ms;
 
 void sys_init(void)
@@ -98,4 +105,62 @@ int wdt_running(void)
 uint32_t wdt_timeout_ms(void)
 {
     return s_wdt_timeout_ms;
+}
+
+/*
+ * The clock stops right after the write; keep the instructions around it in
+ * SRAM so nothing is fetched from flash across the gate (as the vendor does).
+ */
+__attribute__((section(".ramfunc"), noinline))
+static void ram_cpu_sleep(void)
+{
+    REG_SYS_IRQ_CPU_SLEEP = 1;
+    (void)REG_SYS_IRQ_CPU_SLEEP;
+    __asm__ volatile ("nop\n\tnop\n\tnop\n\tnop" ::: "memory");
+}
+
+void sys_sleep_init(void)
+{
+    REG_SYS_IRQ_WAKEUP_MASK |= WAKE_SOURCES;
+    s_stats_t0 = HW_TIMER_UPTIME;
+}
+
+void sys_idle_sleep(void)
+{
+    if (!s_sleep_on)
+        return;
+    uint32_t status;
+    /* Interrupts off across the gate: a pending wake source restarts the clock,
+     * then restoring Status takes the interrupt. */
+    __asm__ volatile ("mfc0 %0, $12\n\tnop" : "=r"(status));
+    __asm__ volatile ("mtc0 %0, $12\n\tnop" :: "r"(status & ~1u) : "memory");
+    uint32_t t0 = HW_TIMER_UPTIME;
+    ram_cpu_sleep();
+    s_slept += HW_TIMER_UPTIME - t0;
+    s_naps++;
+    __asm__ volatile ("mtc0 %0, $12\n\tnop" :: "r"(status) : "memory");
+}
+
+void sys_sleep_enable(int on)
+{
+    s_sleep_on = on;
+}
+
+int sys_sleep_enabled(void)
+{
+    return s_sleep_on;
+}
+
+void sys_sleep_stats(uint32_t *asleep, uint32_t *elapsed, uint32_t *naps)
+{
+    *asleep = s_slept;
+    *elapsed = HW_TIMER_UPTIME - s_stats_t0;
+    *naps = s_naps;
+}
+
+void sys_sleep_stats_reset(void)
+{
+    s_slept = 0;
+    s_naps = 0;
+    s_stats_t0 = HW_TIMER_UPTIME;
 }

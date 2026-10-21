@@ -36,6 +36,7 @@ static int        s_cfg_loaded;   /* 0 = from flash, -1 = defaults */
 void vApplicationIdleHook(void)
 {
     wdt_kick();
+    sys_idle_sleep();   /* gate the CPU clock until the next interrupt */
 }
 
 #define REG_SYS_APB_BASE         0xA1A00000
@@ -285,6 +286,7 @@ static void cli_handle_command(char *cmd)
         uart_puts("  gpio <pin> [in|0|1] - Read / drive a GPIO\r\n");
         uart_puts("  gpio irqtest [pin]  - Edge-interrupt self test (default pin 3)\r\n");
         uart_puts("  pwm <0..255>|off    - PWL1 on GPIO_2 (duty sensed on GPIO_3 via jumper)\r\n");
+        uart_puts("  sleep [on|off]      - Idle light-sleep control and time-asleep stats\r\n");
         uart_puts("  reboot              - Soft-reset the whole chip\r\n");
         uart_puts("  wdt [on [ms]|off]   - Watchdog status / control (fed by the idle task)\r\n");
         uart_puts("  hang                - Spin with interrupts off (watchdog test)\r\n");
@@ -545,6 +547,14 @@ static void cli_handle_command(char *cmd)
         uint32_t got = clock_set_sys_mhz(want);
         if (got) { uart_puts("System clock: "); print_dec(got); uart_puts(" MHz\r\n"); }
         else uart_puts("Unsupported; use 26 39 52 78 89 104 113 125 139 156 178 208 250 312\r\n");
+    } else if (str_eq(cmd, "sleep") || str_eq(cmd, "sleep on") || str_eq(cmd, "sleep off")) {
+        if (cmd[5] == ' ') { sys_sleep_enable(cmd[7] == 'n'); sys_sleep_stats_reset(); }
+        uint32_t asleep, elapsed, naps;
+        sys_sleep_stats(&asleep, &elapsed, &naps);
+        uart_puts("Idle sleep: "); uart_puts(sys_sleep_enabled() ? "on" : "off");
+        uart_puts(", asleep "); print_dec(elapsed >= 1000 ? asleep / (elapsed / 1000) : 0);
+        uart_puts(" permille of "); print_dec(elapsed * 1000 / 16384); uart_puts(" ms, ");
+        print_dec(naps); uart_puts(" naps\r\n");
     } else if (str_eq(cmd, "clock")) {
         uart_puts("System clock (registers): "); print_dec(clock_sys_mhz());
         uart_puts(" MHz, PLL "); uart_puts(clock_pll_locked() ? "locked" : "off"); uart_puts("\r\n");
@@ -706,6 +716,7 @@ int main(void)
     xTaskCreateStatic(vWorkerTask, "Worker", 256, NULL, 1, s_wk_stack, &s_wk_tcb);
 
     gpadc_init();
+    sys_sleep_init();
 
     /* GPS NMEA reader (idle until "gps on") */
     gps_init_task();

@@ -29,4 +29,16 @@ void        wdt_stop(void);
 int         wdt_running(void);
 uint32_t    wdt_timeout_ms(void);
 
+/*
+ * Light sleep: gate the XCPU clock until an interrupt enabled in WakeUp_Mask is
+ * pending (vendor hal_LpsLightSleep). Called from the idle task.
+ */
+void        sys_sleep_init(void);
+void        sys_idle_sleep(void);
+void        sys_sleep_enable(int on);
+int         sys_sleep_enabled(void);
+/* Ticks (16384 Hz) spent asleep / elapsed since the last reset of the stats. */
+void        sys_sleep_stats(uint32_t *asleep, uint32_t *elapsed, uint32_t *naps);
+void        sys_sleep_stats_reset(void);
+
 #endif /* SYSTEM_H */
