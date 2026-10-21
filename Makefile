@@ -29,6 +29,8 @@ APP_SRCS := start.S \
             src/system.c \
             src/clock.c \
             src/rtc.c \
+            src/flash.c \
+            src/settings.c \
             src/main.c
 
 TARGET := a9_free

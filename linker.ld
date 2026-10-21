@@ -32,6 +32,7 @@ SECTIONS
     .data : {
         . = ALIGN(4);
         _data_start = .;
+        *(.ramfunc*)            /* code that runs while flash is unavailable */
         *(.data*)
         . = ALIGN(4);
         _data_end = .;

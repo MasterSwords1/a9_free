@@ -18,11 +18,13 @@
 #include "system.h"
 #include "clock.h"
 #include "rtc.h"
+#include "flash.h"
+#include "settings.h"
 
 extern void *memset(void *s, int c, size_t n);
 
-#define WDT_DEFAULT_MS  4000
-#define SYS_CLOCK_MHZ   312
+static settings_t s_cfg;
+static int        s_cfg_loaded;   /* 0 = from flash, -1 = defaults */
 
 /*
  * The watchdog is fed only from the idle task: if any task monopolises the CPU or
@@ -274,6 +276,8 @@ static void cli_handle_command(char *cmd)
         uart_puts("  clock set <MHz>     - Switch the system clock (26..312 MHz steps)\r\n");
         uart_puts("  date [set <ts>]     - Show / set the RTC (YYYY-MM-DD HH:MM:SS)\r\n");
         uart_puts("  alarm [in <s>|off]  - RTC alarm status / arm / disarm\r\n");
+        uart_puts("  cfg [clock|wdt|note <v>|save|erase] - Persistent settings\r\n");
+        uart_puts("  flash [test]        - Flash status / erase-write-verify benchmark\r\n");
         uart_puts("  reboot              - Soft-reset the whole chip\r\n");
         uart_puts("  wdt [on [ms]|off]   - Watchdog status / control (fed by the idle task)\r\n");
         uart_puts("  hang                - Spin with interrupts off (watchdog test)\r\n");
@@ -356,6 +360,61 @@ static void cli_handle_command(char *cmd)
         uart_puts("Lat "); print_fixed7(f->lat_e7);
         uart_puts("  Lon "); print_fixed7(f->lon_e7);
         uart_puts("  Alt "); print_dec((uint32_t)(f->alt_dm < 0 ? -f->alt_dm : f->alt_dm) / 10); uart_puts(" m\r\n");
+    } else if (str_eq(cmd, "cfg")) {
+        uart_puts("Settings ("); uart_puts(s_cfg_loaded == 0 ? "loaded from flash" : "defaults, none saved");
+        uart_puts("):\r\n  clock "); print_dec(s_cfg.clock_mhz); uart_puts(" MHz\r\n  wdt   ");
+        print_dec(s_cfg.wdt_ms); uart_puts(" ms\r\n  note  \""); uart_puts(s_cfg.note); uart_puts("\"\r\n");
+    } else if (str_starts_with(cmd, "cfg clock ")) {
+        s_cfg.clock_mhz = parse_dec(cmd + 10);
+        uart_puts("clock -> "); print_dec(s_cfg.clock_mhz); uart_puts(" MHz (cfg save, then reboot)\r\n");
+    } else if (str_starts_with(cmd, "cfg wdt ")) {
+        s_cfg.wdt_ms = parse_dec(cmd + 8);
+        uart_puts("wdt -> "); print_dec(s_cfg.wdt_ms); uart_puts(" ms (cfg save, then reboot)\r\n");
+    } else if (str_starts_with(cmd, "cfg note ")) {
+        const char *src = cmd + 9;
+        unsigned i = 0;
+        while (src[i] && i < sizeof(s_cfg.note) - 1) { s_cfg.note[i] = src[i]; i++; }
+        s_cfg.note[i] = '\0';
+        uart_puts("note set (cfg save to keep it)\r\n");
+    } else if (str_eq(cmd, "cfg save")) {
+        uint32_t t0 = HW_TIMER_UPTIME;
+        int rc = settings_save(&s_cfg);
+        uint32_t dt = HW_TIMER_UPTIME - t0;
+        if (rc == 0) s_cfg_loaded = 0;
+        uart_puts(rc == 0 ? "Saved and verified" : "Save FAILED"); uart_puts(" ("); print_dec(dt * 1000 / 16384); uart_puts(" ms)\r\n");
+    } else if (str_eq(cmd, "cfg erase")) {
+        uart_puts(settings_erase() == 0 ? "Settings erased (defaults on next boot)\r\n" : "Erase FAILED\r\n");
+    } else if (str_eq(cmd, "flash")) {
+        uint32_t st = flash_status();
+        uart_puts("Flash SR2:SR1 = "); print_hex(st); uart_puts("  storage window ");
+        print_hex(FLASH_STORAGE_BASE); uart_puts(" + "); print_hex(FLASH_STORAGE_SIZE); uart_puts("\r\n");
+    } else if (str_eq(cmd, "flash test")) {
+        /* Erase / write / verify the last storage sector and time each step */
+        static uint8_t buf[256];
+        const uint32_t a = FLASH_STORAGE_BASE + FLASH_STORAGE_SIZE - FLASH_SECTOR_SIZE;
+        uint32_t t0 = HW_TIMER_UPTIME;
+        int rc = flash_erase(a, FLASH_SECTOR_SIZE);
+        uint32_t t1 = HW_TIMER_UPTIME;
+        uint32_t bad = 0;
+        for (uint32_t off = 0; off < FLASH_SECTOR_SIZE && rc == 0; off += sizeof(buf)) {
+            flash_read(a + off, buf, sizeof(buf));
+            for (unsigned i = 0; i < sizeof(buf); i++) if (buf[i] != 0xFF) bad++;
+        }
+        uint32_t t2 = HW_TIMER_UPTIME;
+        for (uint32_t off = 0; off < FLASH_SECTOR_SIZE && rc == 0; off += sizeof(buf)) {
+            for (unsigned i = 0; i < sizeof(buf); i++) buf[i] = (uint8_t)((off + i) * 7 + (off >> 8));
+            rc = flash_write(a + off, buf, sizeof(buf));
+        }
+        uint32_t t3 = HW_TIMER_UPTIME;
+        for (uint32_t off = 0; off < FLASH_SECTOR_SIZE && rc == 0; off += sizeof(buf)) {
+            flash_read(a + off, buf, sizeof(buf));
+            for (unsigned i = 0; i < sizeof(buf); i++) if (buf[i] != (uint8_t)((off + i) * 7 + (off >> 8))) bad++;
+        }
+        uart_puts(rc ? "flash op FAILED" : (bad ? "VERIFY FAILED" : "OK"));
+        uart_puts(": erase 4 KB "); print_dec((t1 - t0) * 1000 / 16384);
+        uart_puts(" ms, blank check "); print_dec((t2 - t1) * 1000 / 16384);
+        uart_puts(" ms, write 4 KB "); print_dec((t3 - t2) * 1000 / 16384);
+        uart_puts(" ms, bad bytes "); print_dec(bad); uart_puts("\r\n");
     } else if (str_eq(cmd, "date")) {
         rtc_time_t t;
         if (rtc_get(&t) != 0) {
@@ -447,7 +506,7 @@ static void cli_handle_command(char *cmd)
         wdt_stop();
         uart_puts("Watchdog stopped\r\n");
     } else if (str_starts_with(cmd, "wdt on")) {
-        uint32_t ms = WDT_DEFAULT_MS;
+        uint32_t ms = 4000;
         if (cmd[6] == ' ') ms = parse_dec(cmd + 7);
         wdt_start(ms);
         uart_puts("Watchdog running, timeout "); print_dec(wdt_timeout_ms()); uart_puts(" ms\r\n");
@@ -478,6 +537,7 @@ static void vShellTask(void *pvParameters)
     uart_puts("  Preemptive Hardware Tick (100 Hz) | Serial CLI Active\r\n");
     uart_puts("=========================================================\r\n");
     uart_puts("Last reset: "); uart_puts(sys_reset_cause_str(sys_reset_cause())); uart_puts("\r\n");
+    if (s_cfg_loaded == 0 && s_cfg.note[0]) { uart_puts("Note: "); uart_puts(s_cfg.note); uart_puts("\r\n"); }
     uart_puts("Type 'help' for commands.\r\n\r\n");
     uart_puts("a9> ");
 
@@ -546,8 +606,12 @@ int main(void)
     sys_init();
     hardware_init();
 
+    /* Persistent settings (defaults: 312 MHz, 4 s watchdog) */
+    s_cfg_loaded = settings_load(&s_cfg);
+
     /* The ROM leaves the PLL off and the CPU on the 26 MHz crystal */
-    clock_set_sys_mhz(SYS_CLOCK_MHZ);
+    if (!clock_set_sys_mhz(s_cfg.clock_mhz))
+        clock_set_sys_mhz(312);
 
     send_host_event(0xBA5E0001);
 
@@ -567,7 +631,8 @@ int main(void)
     /* Create Interactive Serial Shell Task (Priority 2) */
     xTaskCreateStatic(vShellTask, "Shell", 512, NULL, 2, s_cli_stack, &s_cli_tcb);
 
-    wdt_start(WDT_DEFAULT_MS);
+    if (s_cfg.wdt_ms)
+        wdt_start(s_cfg.wdt_ms);
 
     /* Start FreeRTOS Scheduler with Hardware Preemption */
     send_host_event(0xBA5E0050);

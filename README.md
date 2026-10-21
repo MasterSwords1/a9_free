@@ -128,7 +128,7 @@ make monitor
 | **4** | **Watchdog & proper reset** | ✅ Done: `reboot` uses the vendor soft-reset sequence; reset cause (power-on / soft / watchdog / host debug / RTC alarm) read from the ROM's saved copy and shown in the banner and `status`; 4 s hardware watchdog fed from the idle task (`wdt`, `hang` to test). The flasher stops the watchdog when it takes over. |
 | **5** | **CPU clock / PLL** | ✅ Done: the ROM leaves the CPU on the 26 MHz crystal (measured 19.5 MIPS); the vendor PLL sequence now runs the system at 312 MHz (233.7 MIPS measured, 12x faster). SPI flash and memory bridge stay on the slow clock; the ISPI (PMU) divider follows the system clock; UART2 baud verified unaffected. `clock`, `clock set <MHz>`. |
 | **6** | **RTC / calendar** | ✅ Done: calendar block at `0xA1A0A000` following the vendor `hal_TimRtc*`; encodings verified on hardware (1-based day/month, hardware leap years, ISO weekday 1-7). `date`, `date set`, one-shot `alarm in <s>` via `SYS_IRQ_CALENDAR`; time survives reboot and reflash (lost on power-off without a battery). `tools/a9g_flasher.py --set-time` syncs from the PC. |
-| **7** | **Flash storage API** | Not started. Erase/write/read from the running firmware (reusing the verified SPI flash protocol) for persistent settings that survive a reboot. |
+| **7** | **Flash storage API** | ✅ Done: runtime erase/program from the XIP firmware via SRAM-resident routines (`.ramfunc`, interrupts off, no calls back into flash), same SPI protocol as the programmer; writes confined to the storage window `0x380000-0x38FFFF` (firmware and factory/RF calibration sectors untouchable). 4 KB erase ~40 ms, write ~20 ms. CRC-checked settings record (boot clock, watchdog, note) applied at boot; survives reboot and reflash. `cfg ...`, `flash`, `flash test`. |
 | **8** | **GPADC** | Not started. ADC driver verified on a pin tied to GND/3.3 V and on internal channels; the battery-voltage channel is the basis for later battery monitoring. |
 | **9** | **GPIO interrupts & PWM** | Not started. Edge-triggered GPIO IRQs through the system IRQ controller; PWM brightness control. |
 | **10** | **Low-power sleep** | Not started. `Cpu_Sleep` with timer/GPIO wake-up; the tick and shell must survive sleep cycles. |
@@ -151,7 +151,7 @@ python3 tools/a9g_flasher.py --passive --send status # scripted
 ```
 
 Commands: `help`, `status`, `uptime`, `led blue|green on|off`, `peek`, `poke`,
-`gps on|off`, `gps`, `gps raw`, `pmu <reg>`, `pmuw <reg> <val>`, `wdt [on [ms]|off]`, `hang`, `clock`, `clock set <MHz>`, `u2baud`, `date [set ...]`, `alarm [in <s>|off]`, `reboot`.
+`gps on|off`, `gps`, `gps raw`, `pmu <reg>`, `pmuw <reg> <val>`, `wdt [on [ms]|off]`, `hang`, `clock`, `clock set <MHz>`, `u2baud`, `date [set ...]`, `alarm [in <s>|off]`, `cfg [clock|wdt|note <v>|save|erase]`, `flash [test]`, `reboot`.
 
 ### Recovering a hung target
 The flasher sends a serial break before entering the ROM monitor, which recovers a
