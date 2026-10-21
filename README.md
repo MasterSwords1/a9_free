@@ -99,20 +99,27 @@ the demo's messages.
 
 ### 3. Making the vendor tool work, then reading what it does
 
-With **REA** (Reverse Engineer Anything) installed, the CoolHost library, the ROM and
-the CoolWatcher Ruby scripts were taken apart:
-- **Status 13** turned out to be `QSerialPort::NotOpenError`. CoolHost needs a
-  `comport/COM1 → /dev/ttyUSB0` link relative to its working directory, an X display,
-  and clients on TCP port `7700 + COM index`.
-- **ROM monitor entry:** disassembling the ROM showed that its UART monitor only runs
-  when **Reset_Cause boot-mode bit 2** is set. The scripts had been setting only bits
-  1 and 3.
+The native-client attempt was stuck on the same CoolHost errors. What finally worked
+was reading the vendor tools directly instead of driving them blind, through plain
+disassembly and the tools' own sources:
+- **CoolWatcher's Ruby plugins and type maps** inside its AppImage (`fastpf.rb`,
+  `target_executor.rb`, `8955_soft_pkg.xmd`) define the FastPF flash protocol and the
+  address of the flash programmer's control table.
+- **Disassembling CoolHost** (x86, `objdump`/`nm`: `CHDebugHostEngine::openDevice`,
+  `CHConnection::genericRead`, the packet parser) showed it opens its serial port as
+  `comport/COM1` *relative to its working directory*. With that link in place, plus
+  an X display and clients on TCP port `7700 + COM index`, the "status 13" error
+  (`QSerialPort::NotOpenError`) went away.
+- **Disassembling the mask ROM** (`boot_UartMonitor`) together with the `Boot_Mode`
+  bits in the register map showed that the ROM's UART monitor only runs when
+  **Reset_Cause boot-mode bit 2** is set. The scripts had been setting only bits 1
+  and 3.
 - **CoolHost register arguments** are word indices, not byte offsets.
-- **The FastPF flash protocol**, from `fastpf.rb` and `target_executor.rb`, works like
-  this: a RAM-run programmer is loaded into SRAM, then commands go through two
-  alternating descriptor slots (`0xA1C05F34` → ack `0xF0`, `0xA1C05F48` → ack `0xF1`).
-  Program is command 1, erase 11, end 4, restart 7. The checksum is CRC-24, packed
-  big-endian (found by disassembling `CR_LODPacket_rehash`).
+- **The FastPF protocol** works like this: a RAM-run programmer is loaded into SRAM,
+  then commands go through two alternating descriptor slots (`0xA1C05F34` → ack
+  `0xF0`, `0xA1C05F48` → ack `0xF1`). Program is command 1, erase 11, end 4,
+  restart 7. The checksum is CRC-24, packed big-endian (found by disassembling
+  `CR_LODPacket_rehash` in `libcoolruby.so`).
 - **First full flash:** all 52 blocks of a vendor UART demo were flashed and verified.
   Its output was proven by reading the trace buffer out of target RAM. The message
   goes to UART1, not to the debug port.
@@ -195,7 +202,7 @@ has never transmitted, so the cause is probably on the board itself. See
 
 | Tool | Role |
 | :--- | :--- |
-| [REA](https://github.com/morluto/rea) | Disassembly and analysis of the vendor ELFs and the ROM, capture inspection |
+| `objdump` / `nm` (host binutils) | Disassembly of CoolHost and its libraries (x86), the source of the status-13 and protocol fixes |
 | CSDTK `mips-elf-objdump` / `readelf` / `nm` | Disassembly (MIPS32 and MIPS16e), symbol and literal-pool reads of the vendor firmware |
 | `8955_hard.xml` | The chip's register map, used for every register name, offset and bit |
 | Python 3 | Extraction scripts (literal pools, calibration data, LOD parsing), on-target test harnesses |
@@ -371,5 +378,5 @@ a9_free/
 - FreeRTOS kernel (`kernel/`): MIT license, © Amazon.com, Inc. or its affiliates.
 - The GPRS C SDK and the vendor firmware are © Ai-Thinker / RDA and are not included
   here. They were studied to learn how the hardware works.
-- Reverse engineered with [REA](https://github.com/morluto/rea), the CSDTK binutils
+- Reverse engineered by disassembly (host and CSDTK binutils), the CoolWatcher scripts
   and the chip register map shipped with CSDTK.
