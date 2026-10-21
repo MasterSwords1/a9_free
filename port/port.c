@@ -6,6 +6,7 @@
 #include "task.h"
 #include "portmacro.h"
 #include "rtc.h"
+#include "gpio.h"
 
 extern void send_host_event(unsigned int evt);
 
@@ -113,6 +114,11 @@ void prvSystemInterruptHandler(void)
         if (xTaskIncrementTick() != pdFALSE) {
             vTaskSwitchContext();
         }
+    }
+
+    /* Bit 7: SYS_IRQ_GPIO */
+    if (cause & (1 << 7)) {
+        gpio_irq();
     }
 
     /* Bit 11: SYS_IRQ_CALENDAR (RTC alarm / interval) */

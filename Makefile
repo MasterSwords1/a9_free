@@ -32,6 +32,8 @@ APP_SRCS := start.S \
             src/flash.c \
             src/settings.c \
             src/gpadc.c \
+            src/gpio.c \
+            src/pwm.c \
             src/main.c
 
 TARGET := a9_free

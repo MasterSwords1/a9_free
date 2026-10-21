@@ -21,6 +21,8 @@
 #include "flash.h"
 #include "settings.h"
 #include "gpadc.h"
+#include "gpio.h"
+#include "pwm.h"
 
 extern void *memset(void *s, int c, size_t n);
 
@@ -280,6 +282,9 @@ static void cli_handle_command(char *cmd)
         uart_puts("  cfg [clock|wdt|note <v>|save|erase] - Persistent settings\r\n");
         uart_puts("  flash [test]        - Flash status / erase-write-verify benchmark\r\n");
         uart_puts("  adc [ch|cal]        - Read GPADC channels (ch7 = VBAT) / eFuse calibration\r\n");
+        uart_puts("  gpio <pin> [in|0|1] - Read / drive a GPIO\r\n");
+        uart_puts("  gpio irqtest [pin]  - Edge-interrupt self test (default pin 3)\r\n");
+        uart_puts("  pwm <0..255>|off    - PWL1 on GPIO_2 (duty sensed on GPIO_3 via jumper)\r\n");
         uart_puts("  reboot              - Soft-reset the whole chip\r\n");
         uart_puts("  wdt [on [ms]|off]   - Watchdog status / control (fed by the idle task)\r\n");
         uart_puts("  hang                - Spin with interrupts off (watchdog test)\r\n");
@@ -417,6 +422,61 @@ static void cli_handle_command(char *cmd)
         uart_puts(" ms, blank check "); print_dec((t2 - t1) * 1000 / 16384);
         uart_puts(" ms, write 4 KB "); print_dec((t3 - t2) * 1000 / 16384);
         uart_puts(" ms, bad bytes "); print_dec(bad); uart_puts("\r\n");
+    } else if (str_starts_with(cmd, "gpio irqtest")) {
+        /* Toggle a pin as an output with both-edge interrupts and count them */
+        uint32_t pin = cmd[12] == ' ' ? parse_dec(cmd + 13) : 3;
+        if (pin >= GPIO_PINS || pin == LED_BLUE_PIN || pin == LED_GREEN_PIN) {
+            uart_puts("Use a free pin 0..34 (not the LEDs)\r\n");
+        } else {
+            gpio_mux(pin);
+            gpio_set_output(pin, 0);
+            gpio_irq_reset(pin);
+            gpio_irq_config(pin, 1, 1, 0, 0);
+            uint32_t readback_ok = 0;
+            for (int i = 0; i < 10; i++) {
+                gpio_write(pin, 1); vTaskDelay(1); readback_ok += gpio_read(pin) == 1;
+                gpio_write(pin, 0); vTaskDelay(1); readback_ok += gpio_read(pin) == 0;
+            }
+            gpio_irq_config(pin, 0, 0, 0, 0);
+            gpio_set_input(pin);
+            uart_puts("GPIO"); print_dec(pin); uart_puts(": 20 edges driven, "); print_dec(gpio_irq_count(pin));
+            uart_puts(" interrupts, pad readback "); print_dec(readback_ok); uart_puts("/20\r\n");
+        }
+    } else if (str_starts_with(cmd, "gpio ")) {
+        /* gpio <pin> [in|0|1] */
+        char *p = cmd + 5;
+        uint32_t pin = parse_dec(p);
+        while (*p && *p != ' ') p++;
+        while (*p == ' ') p++;
+        if (pin >= GPIO_PINS) { uart_puts("pin 0..34\r\n"); }
+        else {
+            if (*p == '0' || *p == '1') { gpio_mux(pin); gpio_set_output(pin, *p == '1'); }
+            else if (str_eq(p, "in")) { gpio_mux(pin); gpio_set_input(pin); }
+            uart_puts("GPIO"); print_dec(pin); uart_puts(" = "); print_dec((uint32_t)gpio_read(pin));
+            uart_puts(", irqs "); print_dec(gpio_irq_count(pin)); uart_puts("\r\n");
+        }
+    } else if (str_eq(cmd, "pwm off")) {
+        pwl1_release();
+        uart_puts("PWL1 off, GPIO_2 back to GPIO\r\n");
+    } else if (str_starts_with(cmd, "pwm ")) {
+        /*
+         * Set PWL1 on GPIO_2. The GPIO input path is disconnected while the pad
+         * runs PWL1, so the duty is measured on a second pin: jumper GPIO_2 to
+         * GPIO_3 (sense pin, input) to verify.
+         */
+        uint32_t level = parse_dec(cmd + 4);
+        if (level > 255) level = 255;
+        gpio_mux(3);
+        gpio_set_input(3);
+        pwl1_set(level);
+        vTaskDelay(2);
+        uint32_t high = 0, n = 200000;
+        for (uint32_t i = 0; i < n; i++) high += (uint32_t)gpio_read(3);
+        uart_puts("PWL1 level "); print_dec(level); uart_puts("/255 (");
+        print_dec(level * 1000 / 255); uart_puts(" permille); GPIO_3 sense: ");
+        print_dec(high / (n / 1000)); uart_puts(" permille high");
+        if (high == 0 && level > 0) uart_puts(" (no jumper GPIO_2 -> GPIO_3?)");
+        uart_puts("\r\n");
     } else if (str_eq(cmd, "adc cal")) {
         uint16_t lo, hi;
         gpadc_calib(&lo, &hi);

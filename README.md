@@ -130,7 +130,7 @@ make monitor
 | **6** | **RTC / calendar** | ✅ Done: calendar block at `0xA1A0A000` following the vendor `hal_TimRtc*`; encodings verified on hardware (1-based day/month, hardware leap years, ISO weekday 1-7). `date`, `date set`, one-shot `alarm in <s>` via `SYS_IRQ_CALENDAR`; time survives reboot and reflash (lost on power-off without a battery). `tools/a9g_flasher.py --set-time` syncs from the PC. |
 | **7** | **Flash storage API** | ✅ Done: runtime erase/program from the XIP firmware via SRAM-resident routines (`.ramfunc`, interrupts off, no calls back into flash), same SPI protocol as the programmer; writes confined to the storage window `0x380000-0x38FFFF` (firmware and factory/RF calibration sectors untouchable). 4 KB erase ~40 ms, write ~20 ms. CRC-checked settings record (boot clock, watchdog, note) applied at boot; survives reboot and reflash. `cfg ...`, `flash`, `flash test`. |
 | **8** | **GPADC** | 🟡 Done, not fully physically tested: 8-channel 10-bit GPADC following the vendor `hal_AnaGpadc*` / `pmd_Gpadc*`; channel select in PMU `misc_3BH`, result in `pwm.GPADC_DATA`; per-chip two-point calibration read from the PMU eFuse (raw 622 @ 1133 mV, 770 @ 1400 mV on the test board). Reads switch to the fastest conversion interval, discard the stale result and average 8. Ch7 = VBAT (1/3 divider): ~3.75 V on USB power without a battery. `adc`, `adc <ch>`, `adc cal`. Not yet verified against a known voltage on an external ADC pin (GND / 1.8 V jumper test); channel-to-pin mapping unconfirmed. |
-| **9** | **GPIO interrupts & PWM** | Not started. Edge-triggered GPIO IRQs through the system IRQ controller; PWM brightness control. |
+| **9** | **GPIO interrupts & PWM** | 🟡 Done, not fully physically tested: GPIO verified on hardware: drive/read/mux (pads of GPIO 0-7 and 25-34), rising/falling/debounce/level interrupts on both banks via `SYS_IRQ_GPIO`, following the vendor `hal_Gpio*`; self test toggles a pin with both-edge IRQs (20 edges -> 20 interrupts on GPIO 1, 3, 30, 32, 34). PWM: PWL1 on pad GPIO_2 (the LED pads have no PWM function) following `hal_PwlSelLevel`, **not physically verified** (needs a GPIO_2 -> GPIO_3 jumper; `pwm <level>` then reports the sensed duty). `gpio`, `gpio irqtest`, `pwm`. |
 | **10** | **Low-power sleep** | Not started. `Cpu_Sleep` with timer/GPIO wake-up; the tick and shell must survive sleep cycles. |
 
 ### Later (needs extra hardware)
@@ -151,7 +151,7 @@ python3 tools/a9g_flasher.py --passive --send status # scripted
 ```
 
 Commands: `help`, `status`, `uptime`, `led blue|green on|off`, `peek`, `poke`,
-`gps on|off`, `gps`, `gps raw`, `pmu <reg>`, `pmuw <reg> <val>`, `wdt [on [ms]|off]`, `hang`, `clock`, `clock set <MHz>`, `u2baud`, `date [set ...]`, `alarm [in <s>|off]`, `cfg [clock|wdt|note <v>|save|erase]`, `flash [test]`, `adc [ch|cal]`, `reboot`.
+`gps on|off`, `gps`, `gps raw`, `pmu <reg>`, `pmuw <reg> <val>`, `wdt [on [ms]|off]`, `hang`, `clock`, `clock set <MHz>`, `u2baud`, `date [set ...]`, `alarm [in <s>|off]`, `cfg [clock|wdt|note <v>|save|erase]`, `flash [test]`, `adc [ch|cal]`, `gpio <pin> [in|0|1]`, `gpio irqtest [pin]`, `pwm <0..255>|off`, `reboot`.
 
 ### Recovering a hung target
 The flasher sends a serial break before entering the ROM monitor, which recovers a
