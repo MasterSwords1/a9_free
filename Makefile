@@ -13,7 +13,7 @@ BAUD    ?= 921600
 FLASHER := python3 tools/a9g_flasher.py --port $(PORT) --baud $(BAUD) --ramrun tools/ramrun/open_ramrun_clean.elf
 
 CFLAGS  := -std=gnu99 -EL -march=xcpu -mtune=xcpu -Wa,-march=xcpu,-mtune=xcpu -O2 -nostdlib -nostartfiles -ffreestanding -mno-abicalls -fno-pic -G0
-CFLAGS  += -I. -Iport -Ikernel/include
+CFLAGS  += -I. -Iport -Isrc -Ikernel/include
 
 KERNEL_SRCS := kernel/tasks.c \
                kernel/list.c
@@ -28,6 +28,7 @@ APP_SRCS := start.S \
             src/gps.c \
             src/system.c \
             src/clock.c \
+            src/rtc.c \
             src/main.c
 
 TARGET := a9_free

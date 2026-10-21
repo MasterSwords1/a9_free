@@ -630,6 +630,7 @@ def stream_traces(target: SerialTarget, duration: float = 20.0) -> None:
 
 
 BOOT_SECTOR_MAGIC = 0xD9EF0045
+SET_TIME_LATENCY_S = 1   # shell typing latency compensated by --set-time
 
 SHELL_RX_ADDR = 0xA1C07F00   # must match src/uart.h
 SHELL_RX_SLOTS = 32
@@ -722,9 +723,20 @@ def main() -> int:
     parser.add_argument("--passive", action="store_true", help="Listen passively without resetting or entering monitor")
     parser.add_argument("--shell", action="store_true", help="Attach an interactive shell to the firmware CLI (after flashing/--run-entry, or with --passive)")
     parser.add_argument("--send", action="append", default=[], metavar="CMD", help="Send CMD to the firmware CLI and print the response (repeatable)")
+    parser.add_argument("--set-time", action="store_true", help="Set the target RTC from this PC's local clock (before any --send)")
     parser.add_argument("--listen", type=float, default=1.0, help="Seconds to collect output after each --send command (default: 1.0)")
     parser.add_argument("--monitor-time", type=float, default=20.0, help="Trace monitor duration in seconds (default: 20s)")
     args = parser.parse_args()
+
+    if args.set_time:
+        from datetime import datetime, timedelta
+        # Send just after a PC second boundary. Typing the command through the SXS
+        # mailbox takes ~1.1 s (measured), so send the time it will be on arrival.
+        t = time.time()
+        time.sleep(1 - (t - int(t)) + 0.02)
+        when = datetime.now() + timedelta(seconds=SET_TIME_LATENCY_S)
+        args.send.insert(0, "date set " + when.strftime("%Y-%m-%d %H:%M:%S"))
+        args.passive = args.passive or (not args.execute and args.run_entry is None)
 
     if (args.shell or args.send) and args.passive:
         target = SerialTarget(args.port, args.baud)

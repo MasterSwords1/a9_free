@@ -17,6 +17,7 @@
 #include "gps.h"
 #include "system.h"
 #include "clock.h"
+#include "rtc.h"
 
 extern void *memset(void *s, int c, size_t n);
 
@@ -164,6 +165,38 @@ static uint32_t parse_hex(const char *s)
     return val;
 }
 
+static void print_dec(uint32_t val);
+
+static void print_2d(uint32_t v)
+{
+    uart_putc((char)('0' + (v / 10) % 10));
+    uart_putc((char)('0' + v % 10));
+}
+
+static void print_time(const rtc_time_t *t)
+{
+    static const char *wd[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    print_dec(t->year); uart_putc('-'); print_2d(t->month); uart_putc('-'); print_2d(t->day);
+    uart_putc(' ');
+    print_2d(t->hour); uart_putc(':'); print_2d(t->min); uart_putc(':'); print_2d(t->sec);
+    uart_putc(' ');
+    uart_puts(wd[rtc_weekday(t->year, t->month, t->day)]);
+}
+
+/* "YYYY-MM-DD HH:MM:SS" */
+static int parse_datetime(const char *p, rtc_time_t *t)
+{
+    uint32_t v[6] = {0};
+    for (int i = 0; i < 6; i++) {
+        if (*p < '0' || *p > '9') return -1;
+        while (*p >= '0' && *p <= '9') v[i] = v[i] * 10 + (uint32_t)(*p++ - '0');
+        if (i < 5) { if (*p != '-' && *p != ' ' && *p != ':' && *p != 'T') return -1; p++; }
+    }
+    t->year = (uint16_t)v[0]; t->month = (uint8_t)v[1]; t->day = (uint8_t)v[2];
+    t->hour = (uint8_t)v[3]; t->min = (uint8_t)v[4]; t->sec = (uint8_t)v[5];
+    return 0;
+}
+
 static uint32_t parse_dec(const char *s)
 {
     uint32_t val = 0;
@@ -239,6 +272,8 @@ static void cli_handle_command(char *cmd)
         uart_puts("  pmuw <reg> <val>    - Write a PMU register (expert)\r\n");
         uart_puts("  clock               - Show the system clock and measure it\r\n");
         uart_puts("  clock set <MHz>     - Switch the system clock (26..312 MHz steps)\r\n");
+        uart_puts("  date [set <ts>]     - Show / set the RTC (YYYY-MM-DD HH:MM:SS)\r\n");
+        uart_puts("  alarm [in <s>|off]  - RTC alarm status / arm / disarm\r\n");
         uart_puts("  reboot              - Soft-reset the whole chip\r\n");
         uart_puts("  wdt [on [ms]|off]   - Watchdog status / control (fed by the idle task)\r\n");
         uart_puts("  hang                - Spin with interrupts off (watchdog test)\r\n");
@@ -321,6 +356,38 @@ static void cli_handle_command(char *cmd)
         uart_puts("Lat "); print_fixed7(f->lat_e7);
         uart_puts("  Lon "); print_fixed7(f->lon_e7);
         uart_puts("  Alt "); print_dec((uint32_t)(f->alt_dm < 0 ? -f->alt_dm : f->alt_dm) / 10); uart_puts(" m\r\n");
+    } else if (str_eq(cmd, "date")) {
+        rtc_time_t t;
+        if (rtc_get(&t) != 0) {
+            uart_puts("RTC not set (use: date set YYYY-MM-DD HH:MM:SS)\r\n");
+        } else {
+            print_time(&t); uart_puts("  (hw weekday "); print_dec(t.wday); uart_puts(")\r\n");
+        }
+    } else if (str_starts_with(cmd, "date set ")) {
+        rtc_time_t t;
+        if (parse_datetime(cmd + 9, &t) != 0 || rtc_set(&t) != 0) {
+            uart_puts("Invalid date; use: date set YYYY-MM-DD HH:MM:SS (2000-2127)\r\n");
+        } else {
+            rtc_get(&t); uart_puts("RTC set: "); print_time(&t); uart_puts("\r\n");
+        }
+    } else if (str_eq(cmd, "alarm")) {
+        uart_puts("Alarm: "); uart_puts(rtc_alarm_enabled() ? "armed" : "off");
+        uart_puts(", fired "); print_dec(rtc_alarm_count()); uart_puts(" time(s)\r\n");
+    } else if (str_eq(cmd, "alarm off")) {
+        rtc_alarm_disable();
+        uart_puts("Alarm off\r\n");
+    } else if (str_starts_with(cmd, "alarm in ")) {
+        rtc_time_t t;
+        uint32_t secs = parse_dec(cmd + 9);
+        if (rtc_get(&t) != 0) {
+            uart_puts("RTC not set\r\n");
+        } else if (secs == 0 || secs >= 86400) {
+            uart_puts("Use: alarm in <1..86399 seconds>\r\n");
+        } else {
+            rtc_add_seconds(&t, secs);
+            if (rtc_set_alarm(&t) != 0) uart_puts("Alarm busy\r\n");
+            else { uart_puts("Alarm at "); print_time(&t); uart_puts("\r\n"); }
+        }
     } else if (str_eq(cmd, "u2baud")) {
         /* Time 16 bytes leaving the UART2 TX FIFO (loopback on, GPS unaffected) */
         uart2_init_9600();
@@ -414,7 +481,16 @@ static void vShellTask(void *pvParameters)
     uart_puts("Type 'help' for commands.\r\n\r\n");
     uart_puts("a9> ");
 
+    uint32_t alarms_seen = rtc_alarm_count();
+
     for (;;) {
+        if (rtc_alarm_count() != alarms_seen) {
+            alarms_seen = rtc_alarm_count();
+            rtc_time_t now;
+            uart_puts("\r\n*** RTC alarm");
+            if (rtc_get(&now) == 0) { uart_puts(" at "); print_time(&now); }
+            uart_puts(" ***\r\na9> ");
+        }
         int c = uart_getc();
         if (c >= 0) {
             if (c == '\r' || c == '\n') {

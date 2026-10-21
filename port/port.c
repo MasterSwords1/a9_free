@@ -5,6 +5,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "portmacro.h"
+#include "rtc.h"
 
 extern void send_host_event(unsigned int evt);
 
@@ -112,6 +113,11 @@ void prvSystemInterruptHandler(void)
         if (xTaskIncrementTick() != pdFALSE) {
             vTaskSwitchContext();
         }
+    }
+
+    /* Bit 11: SYS_IRQ_CALENDAR (RTC alarm / interval) */
+    if (cause & (1 << 11)) {
+        rtc_irq();
     }
 }
 
