@@ -27,6 +27,7 @@ APP_SRCS := start.S \
             src/pmu.c \
             src/gps.c \
             src/system.c \
+            src/clock.c \
             src/main.c
 
 TARGET := a9_free

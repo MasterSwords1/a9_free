@@ -16,10 +16,12 @@
 #include "pmu.h"
 #include "gps.h"
 #include "system.h"
+#include "clock.h"
 
 extern void *memset(void *s, int c, size_t n);
 
 #define WDT_DEFAULT_MS  4000
+#define SYS_CLOCK_MHZ   312
 
 /*
  * The watchdog is fed only from the idle task: if any task monopolises the CPU or
@@ -235,12 +237,14 @@ static void cli_handle_command(char *cmd)
         uart_puts("  gps raw             - Show the most recent raw NMEA bytes\r\n");
         uart_puts("  pmu <hex_reg>       - Read a PMU register over ISPI\r\n");
         uart_puts("  pmuw <reg> <val>    - Write a PMU register (expert)\r\n");
+        uart_puts("  clock               - Show the system clock and measure it\r\n");
+        uart_puts("  clock set <MHz>     - Switch the system clock (26..312 MHz steps)\r\n");
         uart_puts("  reboot              - Soft-reset the whole chip\r\n");
         uart_puts("  wdt [on [ms]|off]   - Watchdog status / control (fed by the idle task)\r\n");
         uart_puts("  hang                - Spin with interrupts off (watchdog test)\r\n");
     } else if (str_eq(cmd, "status")) {
         uart_puts("Kernel: FreeRTOS 10.x (Preemptive)\r\n");
-        uart_puts("Target: RDA8955 (MIPS32r2 XCPU @ 312 MHz)\r\n");
+        uart_puts("Target: RDA8955 (XCPU @ "); print_dec(clock_sys_mhz()); uart_puts(" MHz)\r\n");
         uart_puts("Tick Rate: "); print_dec(configTICK_RATE_HZ); uart_puts(" Hz (10 ms)\r\n");
         uart_puts("Ticks elapsed: "); print_dec(xTaskGetTickCount()); uart_puts("\r\n");
         uart_puts("Hardware Uptime Timer: "); print_hex(HW_TIMER_UPTIME); uart_puts("\r\n");
@@ -317,6 +321,50 @@ static void cli_handle_command(char *cmd)
         uart_puts("Lat "); print_fixed7(f->lat_e7);
         uart_puts("  Lon "); print_fixed7(f->lon_e7);
         uart_puts("  Alt "); print_dec((uint32_t)(f->alt_dm < 0 ? -f->alt_dm : f->alt_dm) / 10); uart_puts(" m\r\n");
+    } else if (str_eq(cmd, "u2baud")) {
+        /* Time 16 bytes leaving the UART2 TX FIFO (loopback on, GPS unaffected) */
+        uart2_init_9600();
+        volatile uint32_t *u2 = (volatile uint32_t *)UART2_BASE;
+        u2[0] |= (1u << 24);
+        uint32_t t0 = HW_TIMER_UPTIME;
+        for (int i = 0; i < 16; i++) u2[2] = 0x55;
+        while (((u2[1] >> 8) & 0x1F) != 16 || (u2[1] & (1u << 14)));  /* TX empty, idle */
+        uint32_t dt = HW_TIMER_UPTIME - t0;
+        u2[0] &= ~(1u << 24);
+        while (u2[1] & 0x3F) (void)u2[2];                                 /* drain RX */
+        uart_puts("UART2: 160 bits in "); print_dec(dt); uart_puts(" ticks -> ~");
+        print_dec(dt ? (160u * 16384u) / dt : 0); uart_puts(" baud\r\n");
+    } else if (str_starts_with(cmd, "clock set ")) {
+        uint32_t want = parse_dec(cmd + 10);
+        uint32_t got = clock_set_sys_mhz(want);
+        if (got) { uart_puts("System clock: "); print_dec(got); uart_puts(" MHz\r\n"); }
+        else uart_puts("Unsupported; use 26 39 52 78 89 104 113 125 139 156 178 208 250 312\r\n");
+    } else if (str_eq(cmd, "clock")) {
+        uart_puts("System clock (registers): "); print_dec(clock_sys_mhz());
+        uart_puts(" MHz, PLL "); uart_puts(clock_pll_locked() ? "locked" : "off"); uart_puts("\r\n");
+        /*
+         * Count iterations of a 3-instruction loop (addiu/bnez/nop) over
+         * 1/16 s of the 16384 Hz hardware timer; with the loop in the
+         * I-cache, loop instructions per second approximate the core clock.
+         */
+        uint32_t iters = 4000000u, t0, t1;
+        taskENTER_CRITICAL();
+        t0 = HW_TIMER_UPTIME;
+        __asm__ volatile (
+            ".set noreorder\n"
+            "1: addiu %0, %0, -1\n"
+            "   bnez  %0, 1b\n"
+            "   nop\n"
+            ".set reorder\n"
+            : "+r"(iters));
+        t1 = HW_TIMER_UPTIME;
+        taskEXIT_CRITICAL();
+        uint32_t dt = t1 - t0;               /* 16384 Hz ticks */
+        /* instructions/s = 3 * 4e6 * 16384 / dt, scaled to kHz to fit 32 bits */
+        uint32_t khz = (uint32_t)((3u * 4000u * 16384u) / dt);
+        uart_puts("Loop: 4000000 x 3 instr in "); print_dec(dt);
+        uart_puts(" timer ticks -> ~"); print_dec(khz / 1000); uart_puts(".");
+        print_dec((khz % 1000) / 100); uart_puts(" MHz effective\r\n");
     } else if (str_eq(cmd, "reboot")) {
         uart_puts("Rebooting system...\r\n");
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -421,6 +469,9 @@ int main(void)
 {
     sys_init();
     hardware_init();
+
+    /* The ROM leaves the PLL off and the CPU on the 26 MHz crystal */
+    clock_set_sys_mhz(SYS_CLOCK_MHZ);
 
     send_host_event(0xBA5E0001);
 

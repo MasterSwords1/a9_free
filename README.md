@@ -126,7 +126,7 @@ make monitor
 | **2** | **Bidirectional serial console** | ✅ Done: output on the debug UART, input through an SRAM mailbox written over SXS (the debug host owns UART RX). `make shell`. |
 | **3** | **Onboard GPS (GK9501)** | 🟡 Firmware done and verified via UART2 loopback; the receiver on the test board has not produced NMEA yet. See [GPS_NOTES.md](GPS_NOTES.md). |
 | **4** | **Watchdog & proper reset** | ✅ Done: `reboot` uses the vendor soft-reset sequence; reset cause (power-on / soft / watchdog / host debug / RTC alarm) read from the ROM's saved copy and shown in the banner and `status`; 4 s hardware watchdog fed from the idle task (`wdt`, `hang` to test). The flasher stops the watchdog when it takes over. |
-| **5** | **CPU clock / PLL** | Not started. Confirm the real core clock (boot default vs the 312 MHz `status` claims) and bring up the PLL as the vendor image does; measure against the 16 kHz hardware timer. |
+| **5** | **CPU clock / PLL** | ✅ Done: the ROM leaves the CPU on the 26 MHz crystal (measured 19.5 MIPS); the vendor PLL sequence now runs the system at 312 MHz (233.7 MIPS measured, 12x faster). SPI flash and memory bridge stay on the slow clock; the ISPI (PMU) divider follows the system clock; UART2 baud verified unaffected. `clock`, `clock set <MHz>`. |
 | **6** | **RTC / calendar** | Not started. Wall-clock time and alarms on the 32 kHz domain; `date` shell command. |
 | **7** | **Flash storage API** | Not started. Erase/write/read from the running firmware (reusing the verified SPI flash protocol) for persistent settings that survive a reboot. |
 | **8** | **GPADC** | Not started. ADC driver verified on a pin tied to GND/3.3 V and on internal channels; the battery-voltage channel is the basis for later battery monitoring. |
@@ -151,7 +151,7 @@ python3 tools/a9g_flasher.py --passive --send status # scripted
 ```
 
 Commands: `help`, `status`, `uptime`, `led blue|green on|off`, `peek`, `poke`,
-`gps on|off`, `gps`, `gps raw`, `pmu <reg>`, `pmuw <reg> <val>`, `wdt [on [ms]|off]`, `hang`, `reboot`.
+`gps on|off`, `gps`, `gps raw`, `pmu <reg>`, `pmuw <reg> <val>`, `wdt [on [ms]|off]`, `hang`, `clock`, `clock set <MHz>`, `u2baud`, `reboot`.
 
 ### Recovering a hung target
 The flasher sends a serial break before entering the ROM monitor, which recovers a
