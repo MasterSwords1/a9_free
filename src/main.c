@@ -20,6 +20,7 @@
 #include "rtc.h"
 #include "flash.h"
 #include "settings.h"
+#include "gpadc.h"
 
 extern void *memset(void *s, int c, size_t n);
 
@@ -278,6 +279,7 @@ static void cli_handle_command(char *cmd)
         uart_puts("  alarm [in <s>|off]  - RTC alarm status / arm / disarm\r\n");
         uart_puts("  cfg [clock|wdt|note <v>|save|erase] - Persistent settings\r\n");
         uart_puts("  flash [test]        - Flash status / erase-write-verify benchmark\r\n");
+        uart_puts("  adc [ch|cal]        - Read GPADC channels (ch7 = VBAT) / eFuse calibration\r\n");
         uart_puts("  reboot              - Soft-reset the whole chip\r\n");
         uart_puts("  wdt [on [ms]|off]   - Watchdog status / control (fed by the idle task)\r\n");
         uart_puts("  hang                - Spin with interrupts off (watchdog test)\r\n");
@@ -415,6 +417,24 @@ static void cli_handle_command(char *cmd)
         uart_puts(" ms, blank check "); print_dec((t2 - t1) * 1000 / 16384);
         uart_puts(" ms, write 4 KB "); print_dec((t3 - t2) * 1000 / 16384);
         uart_puts(" ms, bad bytes "); print_dec(bad); uart_puts("\r\n");
+    } else if (str_eq(cmd, "adc cal")) {
+        uint16_t lo, hi;
+        gpadc_calib(&lo, &hi);
+        uart_puts("GPADC eFuse calibration: raw "); print_dec(lo); uart_puts(" @ 1133 mV, raw ");
+        print_dec(hi); uart_puts(" @ 1400 mV"); uart_puts(lo < hi ? "\r\n" : " (INVALID)\r\n");
+    } else if (str_eq(cmd, "adc") || str_starts_with(cmd, "adc ")) {
+        uint32_t first = 0, last = GPADC_CHANNELS - 1;
+        if (cmd[3] == ' ') first = last = parse_dec(cmd + 4);
+        for (uint32_t ch = first; ch <= last && ch < GPADC_CHANNELS; ch++) {
+            uint16_t raw = gpadc_read_raw(ch);
+            int32_t mv = gpadc_raw_to_mv(raw);
+            uart_puts("ch"); print_dec(ch); uart_puts(": ");
+            if (raw == GPADC_BAD) { uart_puts("timeout\r\n"); continue; }
+            uart_puts("raw "); print_dec(raw);
+            if (mv >= 0) { uart_puts("  "); print_dec((uint32_t)mv); uart_puts(" mV"); }
+            if (ch == GPADC_CH_VBAT && mv >= 0) { uart_puts("  (VBAT ~"); print_dec((uint32_t)mv * 3); uart_puts(" mV)"); }
+            uart_puts("\r\n");
+        }
     } else if (str_eq(cmd, "date")) {
         rtc_time_t t;
         if (rtc_get(&t) != 0) {
@@ -624,6 +644,8 @@ int main(void)
 
     /* Create Worker Task (Priority 1) */
     xTaskCreateStatic(vWorkerTask, "Worker", 256, NULL, 1, s_wk_stack, &s_wk_tcb);
+
+    gpadc_init();
 
     /* GPS NMEA reader (idle until "gps on") */
     gps_init_task();
