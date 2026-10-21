@@ -291,7 +291,7 @@ static void cli_handle_command(char *cmd)
         uart_puts("  wdt [on [ms]|off]   - Watchdog status / control (fed by the idle task)\r\n");
         uart_puts("  hang                - Spin with interrupts off (watchdog test)\r\n");
     } else if (str_eq(cmd, "status")) {
-        uart_puts("Kernel: FreeRTOS 10.x (Preemptive)\r\n");
+        uart_puts("Kernel: FreeRTOS V11.1 (preemptive)\r\n");
         uart_puts("Target: RDA8955 (XCPU @ "); print_dec(clock_sys_mhz()); uart_puts(" MHz)\r\n");
         uart_puts("Tick Rate: "); print_dec(configTICK_RATE_HZ); uart_puts(" Hz (10 ms)\r\n");
         uart_puts("Ticks elapsed: "); print_dec(xTaskGetTickCount()); uart_puts("\r\n");
