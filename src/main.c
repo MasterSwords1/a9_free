@@ -15,12 +15,19 @@
 #include "uart2.h"
 #include "pmu.h"
 #include "gps.h"
+#include "system.h"
 
 extern void *memset(void *s, int c, size_t n);
 
+#define WDT_DEFAULT_MS  4000
+
+/*
+ * The watchdog is fed only from the idle task: if any task monopolises the CPU or
+ * interrupts stay disabled, idle never runs and the chip resets.
+ */
 void vApplicationIdleHook(void)
 {
-    __asm__ volatile ("nop");
+    wdt_kick();
 }
 
 #define REG_SYS_APB_BASE         0xA1A00000
@@ -155,6 +162,13 @@ static uint32_t parse_hex(const char *s)
     return val;
 }
 
+static uint32_t parse_dec(const char *s)
+{
+    uint32_t val = 0;
+    while (*s >= '0' && *s <= '9') val = val * 10 + (uint32_t)(*s++ - '0');
+    return val;
+}
+
 static void print_hex(uint32_t val)
 {
     char buf[11];
@@ -221,13 +235,20 @@ static void cli_handle_command(char *cmd)
         uart_puts("  gps raw             - Show the most recent raw NMEA bytes\r\n");
         uart_puts("  pmu <hex_reg>       - Read a PMU register over ISPI\r\n");
         uart_puts("  pmuw <reg> <val>    - Write a PMU register (expert)\r\n");
-        uart_puts("  reboot              - Software reboot via watchdog\r\n");
+        uart_puts("  reboot              - Soft-reset the whole chip\r\n");
+        uart_puts("  wdt [on [ms]|off]   - Watchdog status / control (fed by the idle task)\r\n");
+        uart_puts("  hang                - Spin with interrupts off (watchdog test)\r\n");
     } else if (str_eq(cmd, "status")) {
         uart_puts("Kernel: FreeRTOS 10.x (Preemptive)\r\n");
         uart_puts("Target: RDA8955 (MIPS32r2 XCPU @ 312 MHz)\r\n");
         uart_puts("Tick Rate: "); print_dec(configTICK_RATE_HZ); uart_puts(" Hz (10 ms)\r\n");
         uart_puts("Ticks elapsed: "); print_dec(xTaskGetTickCount()); uart_puts("\r\n");
         uart_puts("Hardware Uptime Timer: "); print_hex(HW_TIMER_UPTIME); uart_puts("\r\n");
+        uart_puts("Last reset: "); uart_puts(sys_reset_cause_str(sys_reset_cause()));
+        uart_puts(" ("); print_hex(sys_reset_cause()); uart_puts(")\r\n");
+        uart_puts("Watchdog: ");
+        if (wdt_running()) { print_dec(wdt_timeout_ms()); uart_puts(" ms\r\n"); }
+        else uart_puts("stopped\r\n");
     } else if (str_eq(cmd, "uptime")) {
         uint32_t ticks = xTaskGetTickCount();
         uint32_t sec = ticks / configTICK_RATE_HZ;
@@ -299,10 +320,29 @@ static void cli_handle_command(char *cmd)
     } else if (str_eq(cmd, "reboot")) {
         uart_puts("Rebooting system...\r\n");
         vTaskDelay(pdMS_TO_TICKS(50));
-        /* Trigger watchdog reset */
-        *(volatile uint32_t *)0xA1A0200C = 0x100;
-        *(volatile uint32_t *)0xA1A02008 = 0x10000;
-        while (1) { __asm__ volatile ("nop"); }
+        sys_soft_reset();
+    } else if (str_eq(cmd, "wdt")) {
+        uart_puts("Watchdog: ");
+        if (wdt_running()) {
+            uart_puts("running, timeout "); print_dec(wdt_timeout_ms()); uart_puts(" ms\r\n");
+        } else {
+            uart_puts("stopped\r\n");
+        }
+    } else if (str_eq(cmd, "wdt off")) {
+        wdt_stop();
+        uart_puts("Watchdog stopped\r\n");
+    } else if (str_starts_with(cmd, "wdt on")) {
+        uint32_t ms = WDT_DEFAULT_MS;
+        if (cmd[6] == ' ') ms = parse_dec(cmd + 7);
+        wdt_start(ms);
+        uart_puts("Watchdog running, timeout "); print_dec(wdt_timeout_ms()); uart_puts(" ms\r\n");
+    } else if (str_eq(cmd, "hang")) {
+        uart_puts("Hanging with interrupts off; the watchdog should reset the chip...\r\n");
+        vTaskDelay(pdMS_TO_TICKS(50));
+        taskDISABLE_INTERRUPTS();
+        for (;;) {
+            __asm__ volatile ("nop");
+        }
     } else {
         uart_puts("Unknown command: '");
         uart_puts(cmd);
@@ -322,6 +362,7 @@ static void vShellTask(void *pvParameters)
     uart_puts("  a9_free: 100% Open-Source FreeRTOS Firmware for RDA8955\r\n");
     uart_puts("  Preemptive Hardware Tick (100 Hz) | Serial CLI Active\r\n");
     uart_puts("=========================================================\r\n");
+    uart_puts("Last reset: "); uart_puts(sys_reset_cause_str(sys_reset_cause())); uart_puts("\r\n");
     uart_puts("Type 'help' for commands.\r\n\r\n");
     uart_puts("a9> ");
 
@@ -378,6 +419,7 @@ static StackType_t  s_cli_stack[512] __attribute__((aligned(8)));
 
 int main(void)
 {
+    sys_init();
     hardware_init();
 
     send_host_event(0xBA5E0001);
@@ -397,6 +439,8 @@ int main(void)
 
     /* Create Interactive Serial Shell Task (Priority 2) */
     xTaskCreateStatic(vShellTask, "Shell", 512, NULL, 2, s_cli_stack, &s_cli_tcb);
+
+    wdt_start(WDT_DEFAULT_MS);
 
     /* Start FreeRTOS Scheduler with Hardware Preemption */
     send_host_event(0xBA5E0050);

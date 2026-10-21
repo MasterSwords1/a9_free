@@ -51,6 +51,8 @@ DBG_HOST_CLKDIV_OFFSET = 2
 DBG_HOST_CFG_OFFSET = 3
 DBG_HOST_H2P_STATUS_OFFSET = 5
 SYS_CTRL_RESET_CAUSE_ADDRESS = 0x01A000A0
+TIMER_WDT_CTRL_ADDRESS = 0xA1A02008   # timer.WDTimer_Ctrl
+TIMER_WDT_STOP = 0x10
 HST_EXECUTOR_X_CMD = 0xFF
 BOOT_HST_MONITOR_START_CMD = 0xFD
 BOOT_HST_MONITOR_END_CMD = 0xFE
@@ -413,6 +415,10 @@ def _enter_host_monitor_once(target: SerialTarget) -> int:
     # Command monitor start
     target.write_internal(DBG_HOST_H2P_STATUS_OFFSET, BOOT_HST_MONITOR_START_CMD)
     evt = target.wait_event(EVENT_HOST_MONITOR_STARTS, timeout=4.0)
+
+    # Stop the hardware watchdog the firmware may have started, so it cannot
+    # reset the chip while the ROM monitor / RAM-run programmer is in control.
+    target.write32(TIMER_WDT_CTRL_ADDRESS, TIMER_WDT_STOP)
 
     # Restore reset cause
     try:

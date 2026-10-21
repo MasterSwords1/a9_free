@@ -26,6 +26,7 @@ APP_SRCS := start.S \
             src/nmea.c \
             src/pmu.c \
             src/gps.c \
+            src/system.c \
             src/main.c
 
 TARGET := a9_free
