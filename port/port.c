@@ -6,11 +6,14 @@
 #include "task.h"
 #include "portmacro.h"
 
-#define DEBUG_HOST_EVENT (*(volatile unsigned int *)0xA1A3F008)
 extern void send_host_event(unsigned int evt);
 
-/* Critical section nesting counter */
-static volatile UBaseType_t uxCriticalNesting = 0xaaaaaaaa;
+/*
+ * Critical section nesting of the running task. Saved in and restored from each
+ * task's context frame by port_asm.S; non-zero until the scheduler starts so that
+ * critical sections before then leave interrupts disabled.
+ */
+volatile UBaseType_t uxCriticalNesting = 0xaaaaaaaa;
 
 /* Task exit error handler if task returns from its function */
 void prvTaskExitError(void)
@@ -21,31 +24,95 @@ void prvTaskExitError(void)
 }
 
 /*
- * Initialises the stack of a new task using the verified RDA8955 120-byte frame.
+ * Initialises the stack of a new task with the 128-byte context frame used by
+ * port_asm.S (see the layout there).
  */
+#define FRAME_WORDS     32
+#define INITIAL_STATUS  0x0000FF04u   /* IM = all, IEp = 1: rfe enables interrupts */
+
 StackType_t *pxPortInitialiseStack(StackType_t *pxTopOfStack, TaskFunction_t pxCode, void *pvParameters)
 {
     /* 8-byte alignment */
     pxTopOfStack = (StackType_t *)(((uint32_t)pxTopOfStack) & ~0x7);
+    pxTopOfStack -= FRAME_WORDS;
 
-    /* Allocate space for 30 words (120 bytes) */
-    pxTopOfStack -= 30;
-
-    /* Clear all registers */
-    for (int i = 0; i < 30; i++) {
+    for (int i = 0; i < FRAME_WORDS; i++) {
         pxTopOfStack[i] = 0;
     }
 
-    /* Word 29 (offset 116): EPC / Task Entry Point */
-    pxTopOfStack[29] = (StackType_t)pxCode;
-
-    /* Word 28 (offset 112): a0 / pvParameters */
-    pxTopOfStack[28] = (StackType_t)pvParameters;
-
-    /* Word 16 (offset 64): RA / Return address */
-    pxTopOfStack[16] = (StackType_t)prvTaskExitError;
+    pxTopOfStack[29] = (StackType_t)pxCode;            /* EPC: task entry */
+    pxTopOfStack[28] = (StackType_t)pvParameters;      /* a0 */
+    pxTopOfStack[16] = (StackType_t)prvTaskExitError;  /* ra */
+    pxTopOfStack[30] = INITIAL_STATUS;                 /* CP0 Status */
+    pxTopOfStack[31] = 0;                              /* critical nesting */
 
     return pxTopOfStack;
+}
+
+/*
+ * Timer and System IRQ Hardware Registers
+ */
+#define REG_SYS_IRQ_BASE       0xA1A01000
+#define REG_SYS_IRQ_CAUSE      (*(volatile uint32_t *)(REG_SYS_IRQ_BASE + 0x00))
+#define REG_SYS_IRQ_STATUS     (*(volatile uint32_t *)(REG_SYS_IRQ_BASE + 0x04))
+#define REG_SYS_IRQ_MASK_SET   (*(volatile uint32_t *)(REG_SYS_IRQ_BASE + 0x08))
+#define REG_SYS_IRQ_MASK_CLR   (*(volatile uint32_t *)(REG_SYS_IRQ_BASE + 0x0C))
+#define REG_SYS_IRQ_SC         (*(volatile uint32_t *)(REG_SYS_IRQ_BASE + 0x14))
+
+#define REG_TIMER_BASE         0xA1A02000
+#define REG_OSTIMER_CTRL       (*(volatile uint32_t *)(REG_TIMER_BASE + 0x00))
+#define REG_TIMER_IRQ_MASK_SET (*(volatile uint32_t *)(REG_TIMER_BASE + 0x18))
+#define REG_TIMER_IRQ_CLR      (*(volatile uint32_t *)(REG_TIMER_BASE + 0x20))
+#define REG_TIMER_IRQ_CAUSE    (*(volatile uint32_t *)(REG_TIMER_BASE + 0x24))
+
+static void prvSetupTimerInterrupt(void)
+{
+    /* Clear any pending OS timer IRQ */
+    REG_TIMER_IRQ_CLR = 1;
+
+    /*
+     * 16,384 Hz clock:
+     * LoadVal = 16384 / configTICK_RATE_HZ (e.g., 164 for 100 Hz = 10 ms tick)
+     * Bit 30: Load (immediate)
+     * Bit 28: Repeat (auto-reload)
+     * Bit 24: Enable
+     */
+    uint32_t load_val = (16384 / configTICK_RATE_HZ);
+    if (load_val == 0) load_val = 1;
+
+    REG_OSTIMER_CTRL = (1 << 30) | (1 << 28) | (1 << 24) | (load_val & 0x00FFFFFF);
+
+    /* Unmask OSTimer interrupt in Timer module */
+    REG_TIMER_IRQ_MASK_SET = 1;
+
+    /* Unmask SYS_IRQ_OS_TIMER (bit 10) in System IRQ controller */
+    REG_SYS_IRQ_MASK_SET = (1 << 10);
+
+    /*
+     * SC.IntEnable is a semaphore: a read returns it and clears it (disabling the
+     * CPU interrupt line), a write restores it. Make sure it is enabled.
+     */
+    REG_SYS_IRQ_SC = 1;
+}
+
+/*
+ * C-level Hardware Exception & Interrupt Dispatcher
+ * Called directly from _freertos_irq_entry in port_asm.S
+ */
+void prvSystemInterruptHandler(void)
+{
+    uint32_t cause = REG_SYS_IRQ_CAUSE;
+
+    /* Bit 10: SYS_IRQ_OS_TIMER */
+    if (cause & (1 << 10)) {
+        /* Clear timer IRQ in Timer module */
+        REG_TIMER_IRQ_CLR = 1;
+
+        /* Increment FreeRTOS tick and switch context if a higher priority task is unblocked */
+        if (xTaskIncrementTick() != pdFALSE) {
+            vTaskSwitchContext();
+        }
+    }
 }
 
 /*
@@ -57,7 +124,8 @@ BaseType_t xPortStartScheduler(void)
 
     send_host_event(0x66660001);
 
-    uxCriticalNesting = 0;
+    /* Configure hardware 100 Hz timer tick */
+    prvSetupTimerInterrupt();
 
     /* Start the first task */
     vPortStartFirstTask();

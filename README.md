@@ -118,16 +118,44 @@ make monitor
 
 ---
 
-## 🗺️ Roadmap & Milestone Estimates
+## 🗺️ Roadmap & Status
 
-| Step | Milestone | Estimated Effort | Description |
-| :--- | :--- | :---: | :--- |
-| **1** | **Preemptive Timer Interrupt** | **1 – 2 hours** | Wire Timer 1 (`0xA1A02000`) to MIPS CP0 `Cause` IRQ vector. Call `xTaskIncrementTick()` from ISR for native `vTaskDelay()` time-slicing. |
-| **2** | **Bidirectional Serial Console (CLI)** | **1.5 – 2.5 hours** | Initialize UART1 (`0xA1A15000`) with circular ring buffers and build an interactive CLI (`help`, `tasks`, `gpio`, `reboot`). |
-| **3** | **Onboard GPS Telemetry (GK9501)** | **2 – 3.5 hours** | Power on the GPS LDO and parse live NMEA sentences (`$GPGGA`, `$GPRMC`) in a background FreeRTOS task. |
-| **4** | **GPADC Battery Monitoring** | **1 – 2 hours** | Read internal GPADC channel 0 (`VBAT`) to monitor battery percentage and report low-voltage alerts. |
+| Step | Milestone | Status |
+| :--- | :--- | :--- |
+| **1** | **Preemptive timer interrupt** | ✅ Done: OS timer IRQ (100 Hz) via the BEV=0 vector at `0x81C00200`, unified 128-byte context frame with per-task Status and critical nesting. |
+| **2** | **Bidirectional serial console** | ✅ Done: output on the debug UART, input through an SRAM mailbox written over SXS (the debug host owns UART RX). `make shell`. |
+| **3** | **Onboard GPS (GK9501)** | 🟡 Firmware done and verified via UART2 loopback; the receiver on the test board has not produced NMEA yet. See [GPS_NOTES.md](GPS_NOTES.md). |
+| **4** | **Watchdog & proper reset** | Not started. Replace the guessed `reboot` registers with the vendor sequence; add reset-cause reporting and a watchdog that recovers a hung system. |
+| **5** | **CPU clock / PLL** | Not started. Confirm the real core clock (boot default vs the 312 MHz `status` claims) and bring up the PLL as the vendor image does; measure against the 16 kHz hardware timer. |
+| **6** | **RTC / calendar** | Not started. Wall-clock time and alarms on the 32 kHz domain; `date` shell command. |
+| **7** | **Flash storage API** | Not started. Erase/write/read from the running firmware (reusing the verified SPI flash protocol) for persistent settings that survive a reboot. |
+| **8** | **GPADC** | Not started. ADC driver verified on a pin tied to GND/3.3 V and on internal channels; the battery-voltage channel is the basis for later battery monitoring. |
+| **9** | **GPIO interrupts & PWM** | Not started. Edge-triggered GPIO IRQs through the system IRQ controller; PWM brightness control. |
+| **10** | **Low-power sleep** | Not started. `Cpu_Sleep` with timer/GPIO wake-up; the tick and shell must survive sleep cycles. |
 
----
+### Later (needs extra hardware)
+
+| Milestone | Needs |
+| :--- | :--- |
+| **UART1 driver** (header pins, real hardware RX) | A second USB-UART or a TX→RX jumper |
+| **GPS position fix** | A GPS antenna, and resolving the silent receiver (see [GPS_NOTES.md](GPS_NOTES.md)) |
+| **Battery monitoring & charging** | A battery |
+| **GSM/GPRS modem** | A GSM antenna and a SIM card |
+| **I2C master** | An I2C device to talk to |
+
+### Shell
+
+```bash
+make shell                                           # interactive, Ctrl+] to quit
+python3 tools/a9g_flasher.py --passive --send status # scripted
+```
+
+Commands: `help`, `status`, `uptime`, `led blue|green on|off`, `peek`, `poke`,
+`gps on|off`, `gps`, `gps raw`, `pmu <reg>`, `pmuw <reg> <val>`, `reboot`.
+
+### Recovering a hung target
+The flasher sends a serial break before entering the ROM monitor, which recovers a
+target whose bus hung without a power cycle.
 
 ## 📜 License & Acknowledgments
 

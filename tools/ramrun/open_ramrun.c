@@ -45,100 +45,133 @@ typedef struct {
 
 #define EVENT_FLASH_PROG_READY 0xF0
 
+/*
+ * SPI flash controller access, following the vendor hal_SpiFlash* driver:
+ * - commands: address/data bytes into DATA_FIFO, then CMD_ADDR = cmd << 8
+ * - reads: CMD_ADDR = cmd << 8 | 0x10000, rx length in BLOCK_SIZE[16:8] and
+ *   CONFIG[18:17] = len - 1; the result is MSB-aligned in READ_BACK
+ * BLOCK_SIZE/CONFIG are only ever read-modify-written.
+ */
+#define SPI_BLOCK_RX_MASK  0xFFFE00FFu
+#define SPI_CONFIG_RX_MASK 0xFFF9FFFFu
+
+static inline void send_event(unsigned int evt);
+
 static inline void spi_wait_idle(void) {
     while (SPI_DATA_FIFO_RO & 0x01);
     while (SPI_DATA_FIFO_RO & 0x01);
 }
 
+static void spi_cmd(unsigned int cmd, const unsigned char *tx, unsigned int len) {
+    spi_wait_idle();
+    SPI_FIFO_CTRL = 2; /* clear tx fifo */
+    spi_wait_idle();
+    for (unsigned int i = 0; i < len; i++)
+        SPI_DATA_FIFO_WO = tx[i];
+    SPI_CMD_ADDR = cmd << 8;
+    spi_wait_idle();
+}
+
+static unsigned int spi_read(unsigned int cmd, unsigned int rxlen) {
+    spi_wait_idle();
+    SPI_FIFO_CTRL = 3; /* clear tx & rx fifos */
+    spi_wait_idle();
+    SPI_BLOCK_SIZE = (SPI_BLOCK_SIZE & SPI_BLOCK_RX_MASK) | (rxlen << 8);
+    SPI_CONFIG = (SPI_CONFIG & SPI_CONFIG_RX_MASK) | ((rxlen - 1) << 17);
+    spi_wait_idle();
+    SPI_CMD_ADDR = (cmd << 8) | 0x10000;
+    spi_wait_idle();
+    unsigned int v = SPI_READ_BACK;
+    SPI_CONFIG &= SPI_CONFIG_RX_MASK;
+    SPI_BLOCK_SIZE = (SPI_BLOCK_SIZE & SPI_BLOCK_RX_MASK) | (1 << 8);
+    return v >> ((4 - rxlen) * 8);
+}
+
 static unsigned int spi_read_status(void) {
-    spi_wait_idle();
-    SPI_FIFO_CTRL = 3; /* clear tx & rx */
-    SPI_BLOCK_SIZE = (1 << 8);
-    SPI_CMD_ADDR = (0x05 << 8) | 0x100;
-    spi_wait_idle();
-    return SPI_READ_BACK & 0xFF;
+    return spi_read(0x05, 1);
 }
 
-static void spi_wait_wip_done(void) {
-    for (volatile int d = 0; d < 2000; d++);
-    while (spi_read_status() & 0x01);
-}
-
-static void spi_write_enable(void) {
-    spi_wait_idle();
-    SPI_BLOCK_SIZE = 0;
-    SPI_CMD_ADDR = (0x06 << 8);
-    spi_wait_idle();
-    volatile int timeout = 10000;
-    while (((spi_read_status() & 0x02) == 0) && timeout--);
+/* SR2 (0x35) << 8 | SR1 (0x05), the same pair the vendor hal reads. */
+static unsigned int spi_read_status16(void) {
+    return (spi_read(0x35, 1) << 8) | spi_read(0x05, 1);
 }
 
 static unsigned int spi_read_id(void) {
-    spi_wait_idle();
-    SPI_FLASH_24 = 3;
-    SPI_BLOCK_SIZE = (3 << 8); /* 3 bytes */
-    spi_wait_idle();
-    SPI_CMD_ADDR = (0x9F << 8) | 0x100;
-    spi_wait_idle();
-    return SPI_READ_BACK;
+    return spi_read(0x9F, 3);
 }
 
+/* Busy-wait until WIP clears; the vendor polls SR1 bit 0 after ~20 us. */
+static void spi_wait_wip_done(void) {
+    for (volatile int d = 0; d < 100; d++);
+    while (spi_read_status() & 0x01);
+}
+
+/* Returns non-zero once the write-enable latch is confirmed set. */
+static int spi_write_enable(void) {
+    for (int i = 0; i < 1000; i++) {
+        spi_cmd(0x06, 0, 0);
+        if (spi_read_status() & 0x02)
+            return 1;
+    }
+    return 0;
+}
+
+/* Clear all block-protect bits (SR1 BP/SRP and SR2 CMP) with a 2-byte WRSR. */
 static void spi_unlock_flash(void) {
+    unsigned char zero[2] = {0, 0};
+    spi_wait_wip_done();
     spi_write_enable();
-    spi_wait_idle();
-    SPI_FIFO_CTRL = 2; /* clear tx fifo */
-    SPI_BLOCK_SIZE = 0;
-    SPI_DATA_FIFO_WO = 0;
-    SPI_DATA_FIFO_WO = 0;
-    SPI_CMD_ADDR = 0x0100; /* WRSR 0x01 */
+    spi_cmd(0x01, zero, 2);
     spi_wait_wip_done();
 }
 
+static inline void spi_manual_mode(int on) {
+    if (on)
+        SPI_AHB_CTRL |= 0x10;
+    else
+        SPI_AHB_CTRL &= ~0x11u;
+}
+
 static void flash_erase(unsigned int addr, unsigned int size) {
-    SPI_AHB_CTRL |= 0x10;
+    spi_manual_mode(1);
     unsigned int end = addr + size;
     for (unsigned int a = addr; a < end; a += 4096) {
-        spi_write_enable();
-        spi_wait_idle();
-        SPI_FIFO_CTRL = 2; /* clear tx fifo */
-        SPI_BLOCK_SIZE = 0;
-        SPI_DATA_FIFO_WO = (a >> 16) & 0xFF;
-        SPI_DATA_FIFO_WO = (a >> 8) & 0xFF;
-        SPI_DATA_FIFO_WO = a & 0xFF;
-        SPI_CMD_ADDR = (0x20 << 8);
+        unsigned char tx[3] = {(a >> 16) & 0xFF, (a >> 8) & 0xFF, a & 0xFF};
+        spi_wait_wip_done();
+        if (!spi_write_enable())
+            send_event(0xEE000000 | (a >> 12)); /* WEL never set */
+        spi_cmd(0x20, tx, 3);
         spi_wait_wip_done();
     }
-    SPI_AHB_CTRL &= ~0x10;
+    spi_manual_mode(0);
 }
 
 static void flash_program(unsigned int flash_addr, const unsigned char *src, unsigned int size) {
-    SPI_AHB_CTRL |= 0x10;
+    spi_manual_mode(1);
     unsigned int offset = 0;
     while (offset < size) {
-        unsigned int page_rem = 256 - ((flash_addr + offset) & 0xFF);
-        unsigned int chunk = size - offset;
-        if (chunk > page_rem)
-            chunk = page_rem;
-        if (chunk > 16)
-            chunk = 16;
-
+        /* One page program per 256-byte page, as the vendor hal_SpiFlashWrite does:
+         * data bytes go into the FIFO, the address rides in CMD_ADDR[31:8]. */
         unsigned int a = flash_addr + offset;
-        spi_write_enable();
+        unsigned int chunk = 256 - (a & 0xFF);
+        if (chunk > size - offset)
+            chunk = size - offset;
+
+        spi_wait_wip_done();
+        if (!spi_write_enable())
+            send_event(0xEF000000 | (a & 0xFFFFFF)); /* WEL never set */
         spi_wait_idle();
         SPI_FIFO_CTRL = 2; /* clear tx fifo */
-        SPI_BLOCK_SIZE = 0;
-        SPI_DATA_FIFO_WO = (a >> 16) & 0xFF;
-        SPI_DATA_FIFO_WO = (a >> 8) & 0xFF;
-        SPI_DATA_FIFO_WO = a & 0xFF;
-        for (unsigned int i = 0; i < chunk; i++) {
+        spi_wait_idle();
+        for (unsigned int i = 0; i < chunk; i++)
             SPI_DATA_FIFO_WO = src[offset + i];
-        }
-        SPI_CMD_ADDR = (0x02 << 8);
+        SPI_CMD_ADDR = (a << 8) | 0x02;
+        spi_wait_idle();
         spi_wait_wip_done();
 
         offset += chunk;
     }
-    SPI_AHB_CTRL &= ~0x10;
+    spi_manual_mode(0);
 }
 
 static inline void send_event(unsigned int evt) {
@@ -151,8 +184,10 @@ void ramrun_main(void) {
     void (*inv_icache)(void) = (void (*)(void))0x81e00378;
     inv_icache();
 
-    /* Unlock status register protection bits */
+    /* Report status registers before and after the unlock (0xE1/0xE2 events) */
+    send_event(0xE1000000 | spi_read_status16());
     spi_unlock_flash();
+    send_event(0xE2000000 | spi_read_status16());
 
     /* Read flash ID */
     unsigned int flash_id = spi_read_id();
@@ -190,10 +225,19 @@ void ramrun_main(void) {
             } else if (cmd == FPC_RESTART) {
                 FASTPF_MAP.slot0.cmd = FPC_NONE;
                 send_event(EVENT_FLASH_PROG_READY + 0);
-                for (volatile int d = 0; d < 200000; d++);
-                /* Trigger hardware soft reset into flashed firmware */
-                *(volatile unsigned int *)0xA1A00000 = 0x00A50001;
-                *(volatile unsigned int *)0xA1A00004 = 0x80000000;
+                for (volatile int d = 0; d < 100000; d++);
+                /* Clear boot mode in Reset_Cause so future boots boot from flash */
+                *(volatile unsigned int *)0xA1A000A0 = 0;
+                /* Restore SPI Flash controller to AHB read mode via ROM boot_IspiOpen */
+                void (*ispi_open)(int) = (void (*)(int))0x81e01791;
+                ispi_open(0);
+                /* Invalidate I-cache */
+                void (*inv_icache)(void) = (void (*)(void))0x81e00378;
+                inv_icache();
+                /* Jump directly to flash entry point (0x88000010) */
+                typedef void (*entry_func_t)(void);
+                entry_func_t entry = (entry_func_t)0x88000010;
+                entry();
                 while (1);
             }
             FASTPF_MAP.slot0.cmd = FPC_NONE;
@@ -209,10 +253,19 @@ void ramrun_main(void) {
             } else if (cmd == FPC_RESTART) {
                 FASTPF_MAP.slot1.cmd = FPC_NONE;
                 send_event(EVENT_FLASH_PROG_READY + 1);
-                for (volatile int d = 0; d < 200000; d++);
-                /* Trigger hardware soft reset into flashed firmware */
-                *(volatile unsigned int *)0xA1A00000 = 0x00A50001;
-                *(volatile unsigned int *)0xA1A00004 = 0x80000000;
+                for (volatile int d = 0; d < 100000; d++);
+                /* Clear boot mode in Reset_Cause so future boots boot from flash */
+                *(volatile unsigned int *)0xA1A000A0 = 0;
+                /* Restore SPI Flash controller to AHB read mode via ROM boot_IspiOpen */
+                void (*ispi_open)(int) = (void (*)(int))0x81e01791;
+                ispi_open(0);
+                /* Invalidate I-cache */
+                void (*inv_icache)(void) = (void (*)(void))0x81e00378;
+                inv_icache();
+                /* Jump directly to flash entry point (0x88000010) */
+                typedef void (*entry_func_t)(void);
+                entry_func_t entry = (entry_func_t)0x88000010;
+                entry();
                 while (1);
             }
             FASTPF_MAP.slot1.cmd = FPC_NONE;

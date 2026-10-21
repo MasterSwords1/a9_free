@@ -21,6 +21,11 @@ KERNEL_SRCS := kernel/tasks.c \
 APP_SRCS := start.S \
             port/port_asm.S \
             port/port.c \
+            src/uart.c \
+            src/uart2.c \
+            src/nmea.c \
+            src/pmu.c \
+            src/gps.c \
             src/main.c
 
 TARGET := a9_free
@@ -43,7 +48,10 @@ flash: $(TARGET).bin
 monitor:
 	$(FLASHER) --monitor --passive --monitor-time 20
 
+shell:
+	$(FLASHER) --shell --passive
+
 clean:
 	rm -f $(TARGET).elf $(TARGET).bin $(TARGET).asm
 
-.PHONY: all clean flash monitor disasm
+.PHONY: all clean flash monitor shell disasm

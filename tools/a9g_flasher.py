@@ -9,6 +9,7 @@ SXS / Debug Host serial protocol and standard ELF / BIN files.
 from __future__ import annotations
 
 import argparse
+import os
 import struct
 import sys
 import time
@@ -49,7 +50,7 @@ DBG_HOST_CTRL_CLR_OFFSET = 1
 DBG_HOST_CLKDIV_OFFSET = 2
 DBG_HOST_CFG_OFFSET = 3
 DBG_HOST_H2P_STATUS_OFFSET = 5
-SYS_CTRL_RESET_CAUSE_ADDRESS = 0x01A0009C
+SYS_CTRL_RESET_CAUSE_ADDRESS = 0x01A000A0
 HST_EXECUTOR_X_CMD = 0xFF
 BOOT_HST_MONITOR_START_CMD = 0xFD
 BOOT_HST_MONITOR_END_CMD = 0xFE
@@ -193,8 +194,33 @@ def parse_elf(path: Path) -> list[ProgramBlock]:
     return blocks
 
 
+def parse_lod(path: Path) -> list[ProgramBlock]:
+    """Coolsand LOD: '#' header lines, '@<hex addr>' sections, one hex word per line."""
+    blocks: list[ProgramBlock] = []
+    addr = None
+    words: list[int] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("@"):
+            if addr is not None and words:
+                blocks.append(ProgramBlock(addr, words))
+            addr = int(line[1:], 16) & 0x0FFFFFFF
+            words = []
+        else:
+            words.append(int(line, 16))
+    if addr is not None and words:
+        blocks.append(ProgramBlock(addr, words))
+    if not blocks:
+        raise ValueError(f"{path}: no sections found in LOD")
+    return blocks
+
+
 def load_firmware(path: Path, address: int | None = None) -> list[ProgramBlock]:
     suffix = path.suffix.lower()
+    if suffix == ".lod":
+        return parse_lod(path)
     if suffix == ".bin":
         base = address if address is not None else 0x08240000
         return parse_bin(path, base)
@@ -220,14 +246,18 @@ class SerialTarget:
         self.rx_buf = bytearray()
         self.escaped = False
         self.read_id = 0x10
+        # Called with bytes that are not part of an SXS frame (the firmware's
+        # console output shares the debug UART with SXS traffic).
+        self.text_sink = None
 
-    def open(self):
-        print(f"[-] Opening {self.port} at {self.baud} baud (xonxoff=True)...")
+    def open(self, raw: bool = False):
+        mode = "raw 8N1" if raw else "SXS xonxoff=True"
+        print(f"[-] Opening {self.port} at {self.baud} baud ({mode})...")
         self.ser = serial.Serial(
             self.port,
             self.baud,
             timeout=0.05,
-            xonxoff=True,
+            xonxoff=not raw,
             rtscts=False,
             dsrdtr=False,
         )
@@ -287,8 +317,10 @@ class SerialTarget:
     def poll_packet(self, timeout: float = 0.2) -> tuple[int | None, bytes | None]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            while len(self.rx_buf) >= 4:
+            while self.rx_buf:
                 if self.rx_buf[0] in (0xAD, 0xBB):
+                    if len(self.rx_buf) < 4:
+                        break
                     pkt_len = (self.rx_buf[1] << 8) | self.rx_buf[2]
                     total = pkt_len + 4
                     if len(self.rx_buf) >= total:
@@ -300,7 +332,12 @@ class SerialTarget:
                     else:
                         break
                 else:
-                    self.rx_buf.pop(0)
+                    n = 1
+                    while n < len(self.rx_buf) and self.rx_buf[n] not in (0xAD, 0xBB):
+                        n += 1
+                    if self.text_sink:
+                        self.text_sink(bytes(self.rx_buf[:n]))
+                    del self.rx_buf[:n]
 
             n = self.ser.in_waiting if self.ser else 0
             raw = self.ser.read(n or 1) if self.ser else b""
@@ -345,41 +382,57 @@ class SerialTarget:
 # ---------------------------------------------------------------------------
 # High-Level Flashing Engine
 # ---------------------------------------------------------------------------
-def enter_host_monitor(target: SerialTarget):
-    print("[-] Requesting 8955 Serial Host Monitor...")
-    if target.ser and target.ser.is_open:
-        try:
-            target.ser.send_break(0.25)
-            time.sleep(0.1)
-            target.ser.reset_input_buffer()
-            target.ser.reset_output_buffer()
-        except Exception:
-            pass
-    target.rx_buf.clear()
+def _enter_host_monitor_once(target: SerialTarget) -> int:
+    # A serial break resets the debug host's receive state; it recovers a target
+    # whose bus hung (e.g. flash read while busy) without a power cycle.
+    if target.ser:
+        target.ser.send_break(0.25)
+        time.sleep(0.2)
+        target.ser.reset_input_buffer()
+        target.rx_buf.clear()
+        target.escaped = False
+    # Configure CFG (Force_Prio_H=1, Disable_IFC_H=0, Disable_Uart_H=0) to ensure IFC memory accesses work
+    target.write_internal(DBG_HOST_CFG_OFFSET, 0x80)
 
+    try:
+        prev = target.read32(SYS_CTRL_RESET_CAUSE_ADDRESS, timeout=0.5)
+    except Exception:
+        prev = 0x00200000
 
-    # 1. Configure Reset Cause with monitor boot mode
-    prev = 0x28
-    monitor_mode = prev | (1 << 1) | (1 << 2) | (1 << 3)
-    target.write32(SYS_CTRL_RESET_CAUSE_ADDRESS, monitor_mode << 16)
+    boot_mode = ((prev >> 16) & 0x3F) | (1 << 1) | (1 << 2) | (1 << 3)
+    target.write32(SYS_CTRL_RESET_CAUSE_ADDRESS, boot_mode << 16)
 
-    # 2. Trigger hardware Debug Reset
-    target.write_internal(DBG_HOST_CTRL_SET_OFFSET, 1 << 0)
+    # Trigger hardware Debug Reset & halt XCPU (Debug_Reset | XCPU_Force_Reset | Force_Wakeup)
+    target.write_internal(DBG_HOST_CTRL_SET_OFFSET, (1 << 0) | (1 << 1) | (1 << 2))
     time.sleep(0.5)
 
-    # Configure host priority and clear force reset
-    target.write_internal(DBG_HOST_CFG_OFFSET, 1 << 7)
+    # Re-enable COM access and unfreeze CPU into ROM
+    target.write_internal(DBG_HOST_CFG_OFFSET, 0x80)
     target.write_internal(DBG_HOST_CTRL_CLR_OFFSET, 1 << 1)
 
     # Command monitor start
     target.write_internal(DBG_HOST_H2P_STATUS_OFFSET, BOOT_HST_MONITOR_START_CMD)
-    evt = target.wait_event(EVENT_HOST_MONITOR_STARTS, timeout=8.0)
-    print(f"[+] Entered Host Monitor: 0x{evt:08X}")
+    evt = target.wait_event(EVENT_HOST_MONITOR_STARTS, timeout=4.0)
 
     # Restore reset cause
-    target.write32(SYS_CTRL_RESET_CAUSE_ADDRESS, prev << 16)
+    try:
+        target.write32(SYS_CTRL_RESET_CAUSE_ADDRESS, prev)
+    except Exception:
+        pass
+    return evt
 
 
+def enter_host_monitor(target: SerialTarget, attempts: int = 3):
+    print("[-] Requesting 8955 Serial Host Monitor...")
+    for attempt in range(1, attempts + 1):
+        try:
+            evt = _enter_host_monitor_once(target)
+            print(f"[+] Entered Host Monitor: 0x{evt:08X}")
+            return
+        except TimeoutError:
+            if attempt == attempts:
+                raise
+            print(f"[!] No monitor response, retrying with a fresh break ({attempt}/{attempts})...")
 
 
 def read_flash_map(target: SerialTarget, timeout: float = 3.0) -> tuple[int, list[int], list[int], int]:
@@ -455,7 +508,7 @@ def flash_firmware(target: SerialTarget, ramrun_blocks: list[ProgramBlock], firm
         send_command(target, slot_addr, ram_addr, size, flash_addr, chunk_fcs, cmd)
         expected = EVENT_FLASH_PROG_READY + current_cmd
         target.wait_event(expected, timeout=timeout)
-        current_cmd = (current_cmd + 1) % 2
+        current_cmd = 0
 
     for idx, block in enumerate(firmware_blocks, 1):
         data = block.data
@@ -476,6 +529,16 @@ def flash_firmware(target: SerialTarget, ramrun_blocks: list[ProgramBlock], firm
             current_buf = (current_buf + 1) % len(buffers)
             offset += len(chunk)
 
+    # Coolsand images (LOD) leave the boot-sector magic blank; the programmer writes
+    # it last so that an interrupted flash never looks bootable to the ROM.
+    boot = next((b for b in firmware_blocks if (b.address & 0x01FFFFFF) == 0), None)
+    if boot is not None and boot.words and boot.words[0] == 0xFFFFFFFF:
+        magic = struct.pack("<I", BOOT_SECTOR_MAGIC)
+        buf = buffers[current_buf]
+        target.write_block(buf, magic)
+        dispatch(buf, len(magic), 0, calculate_fcs(magic), FPC_PROGRAM, timeout=15.0)
+        print(f"[+] Wrote boot-sector magic 0x{BOOT_SECTOR_MAGIC:08X} at 0x08000000.")
+
     dispatch(0, 0, 0, 0, FPC_END, timeout=10.0)
     print("[+] Finalized programming session.")
 
@@ -486,7 +549,7 @@ def flash_firmware(target: SerialTarget, ramrun_blocks: list[ProgramBlock], firm
     except (TimeoutError, RuntimeError):
         pass
     print("[+] Flash programmer restart acknowledged.")
-    exit_host_monitor(target)
+    print("[+] Firmware booted directly into SPI flash (0x88000010)!")
 
 
 def exit_host_monitor(target: SerialTarget) -> None:
@@ -560,6 +623,82 @@ def stream_traces(target: SerialTarget, duration: float = 20.0) -> None:
         print("\n[*] Trace monitor interrupted by user.")
 
 
+BOOT_SECTOR_MAGIC = 0xD9EF0045
+
+SHELL_RX_ADDR = 0xA1C07F00   # must match src/uart.h
+SHELL_RX_SLOTS = 32
+
+
+class ShellLink:
+    """Console over the debug UART: output arrives as plain bytes between SXS
+    frames, input is written into the firmware's SRAM mailbox with SXS writes
+    (the debug host owns the UART receive side)."""
+
+    def __init__(self, target: SerialTarget, sink):
+        self.target = target
+        target.text_sink = sink
+        self.head = target.read32(SHELL_RX_ADDR)
+
+    def pump(self, seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.target.poll_packet(timeout=0.02)
+
+    def send(self, data: bytes) -> None:
+        for ch in data:
+            while (self.head - self.target.read32(SHELL_RX_ADDR + 4)) & 0xFFFFFFFF >= SHELL_RX_SLOTS:
+                self.pump(0.01)
+            slot = SHELL_RX_ADDR + 8 + 4 * (self.head % SHELL_RX_SLOTS)
+            self.target.write32(slot, ch)
+            self.head = (self.head + 1) & 0xFFFFFFFF
+            self.target.write32(SHELL_RX_ADDR, self.head)
+
+
+def interactive_shell(target: SerialTarget) -> None:
+    """Bridge the firmware CLI to this terminal (Ctrl+] quits)."""
+    import select
+    import termios
+    import tty
+
+    def sink(b: bytes) -> None:
+        sys.stdout.write(b.decode("ascii", errors="replace"))
+        sys.stdout.flush()
+
+    link = ShellLink(target, sink)
+    print("[+] Shell attached. Press Ctrl+] to quit.")
+    interactive = sys.stdin.isatty()
+    old = termios.tcgetattr(sys.stdin) if interactive else None
+    try:
+        if interactive:
+            tty.setcbreak(sys.stdin.fileno())
+        while True:
+            link.pump(0.03)
+            if interactive and select.select([sys.stdin], [], [], 0)[0]:
+                ch = os.read(sys.stdin.fileno(), 1)
+                if ch == b"\x1d":
+                    break
+                link.send(b"\r" if ch == b"\n" else ch)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        target.text_sink = None
+        if old is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old)
+        print("\n[*] Shell closed.")
+
+
+def run_shell_script(target: SerialTarget, commands: list[str], listen: float = 1.0) -> str:
+    """Send each command line to the firmware CLI and return everything it printed."""
+    out = bytearray()
+    link = ShellLink(target, out.extend)
+    link.pump(listen)
+    for cmd in commands:
+        link.send(cmd.encode("ascii") + b"\r")
+        link.pump(listen)
+    target.text_sink = None
+    return out.decode("ascii", errors="replace")
+
+
 # ---------------------------------------------------------------------------
 # CLI Entry Point
 # ---------------------------------------------------------------------------
@@ -567,15 +706,40 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial port (default: /dev/ttyUSB0)")
     parser.add_argument("--baud", type=int, default=921600, help="Baud rate (default: 921600)")
-    parser.add_argument("--ramrun", type=Path, default=Path("ramrun/open_ramrun_clean.elf"), help="RAM-run ELF/BIN (default: ramrun/open_ramrun_clean.elf)")
-    parser.add_argument("--firmware", type=Path, default=Path("demo/baremetal/baremetal_boot.bin"), help="Firmware BIN/ELF")
-    parser.add_argument("--address", type=lambda s: int(s, 0), default=0x08010000, help="Flash address for .bin (default: 0x08010000)")
+    script_dir = Path(__file__).resolve().parent
+    parser.add_argument("--ramrun", type=Path, default=script_dir / "ramrun" / "open_ramrun_clean.elf", help="RAM-run ELF/BIN")
+    parser.add_argument("--firmware", type=Path, default=Path("a9_free.bin"), help="Firmware BIN/ELF (default: a9_free.bin)")
+    parser.add_argument("--address", type=lambda s: int(s, 0), default=0x08000000, help="Flash address for .bin (default: 0x08000000)")
     parser.add_argument("--execute", action="store_true", help="Perform actual flash writes (default: dry-run)")
     parser.add_argument("--run-entry", type=lambda s: int(s, 0), default=None, help="Directly jump to entry point via ROM monitor executor")
     parser.add_argument("--monitor", action="store_true", help="Stream live execution traces after boot")
     parser.add_argument("--passive", action="store_true", help="Listen passively without resetting or entering monitor")
+    parser.add_argument("--shell", action="store_true", help="Attach an interactive shell to the firmware CLI (after flashing/--run-entry, or with --passive)")
+    parser.add_argument("--send", action="append", default=[], metavar="CMD", help="Send CMD to the firmware CLI and print the response (repeatable)")
+    parser.add_argument("--listen", type=float, default=1.0, help="Seconds to collect output after each --send command (default: 1.0)")
     parser.add_argument("--monitor-time", type=float, default=20.0, help="Trace monitor duration in seconds (default: 20s)")
     args = parser.parse_args()
+
+    if (args.shell or args.send) and args.passive:
+        target = SerialTarget(args.port, args.baud)
+        try:
+            target.open()
+            if args.send:
+                print(run_shell_script(target, args.send, listen=args.listen))
+            else:
+                interactive_shell(target)
+        finally:
+            target.close()
+        return 0
+
+    if args.monitor and args.passive:
+        target = SerialTarget(args.port, args.baud)
+        try:
+            target.open()
+            stream_traces(target, duration=args.monitor_time)
+        finally:
+            target.close()
+        return 0
 
     ramrun_blocks = load_firmware(args.ramrun)
     firmware_blocks = load_firmware(args.firmware, args.address)
@@ -586,7 +750,7 @@ def main() -> int:
     print(f"  RAM-run: {args.ramrun} ({len(ramrun_blocks)} blocks)")
     print(f"  Firmware: {args.firmware} ({len(firmware_blocks)} blocks, {total_fw:,} bytes at 0x{firmware_blocks[0].address:08X})")
 
-    if not args.execute and not args.monitor and args.run_entry is None:
+    if not (args.execute or args.monitor or args.shell or args.send) and args.run_entry is None:
         print("[!] DRY-RUN complete. Pass --execute to flash, --run-entry to jump, or --monitor to monitor.")
         return 0
 
@@ -605,6 +769,10 @@ def main() -> int:
                 enter_host_monitor(target)
                 exit_host_monitor(target)
             stream_traces(target, duration=args.monitor_time)
+        if args.send:
+            print(run_shell_script(target, args.send, listen=args.listen))
+        elif args.shell:
+            interactive_shell(target)
     finally:
         target.close()
     return 0

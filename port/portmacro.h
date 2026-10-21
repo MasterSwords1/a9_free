@@ -42,8 +42,31 @@ extern void vPortExitCritical( void );
 #define portENTER_CRITICAL()    vPortEnterCritical()
 #define portEXIT_CRITICAL()     vPortExitCritical()
 
-#define portDISABLE_INTERRUPTS() __asm__ volatile ( "" ::: "memory" )
-#define portENABLE_INTERRUPTS()  __asm__ volatile ( "" ::: "memory" )
+static inline void vPortDisableInterrupts(void)
+{
+    __asm__ volatile (
+        "mfc0 $t0, $12\n\t"
+        "li   $t1, ~1\n\t"
+        "and  $t0, $t0, $t1\n\t"
+        "mtc0 $t0, $12\n\t"
+        "nop\n\t"
+        ::: "t0", "t1", "memory"
+    );
+}
+
+static inline void vPortEnableInterrupts(void)
+{
+    __asm__ volatile (
+        "mfc0 $t0, $12\n\t"
+        "ori  $t0, $t0, 1\n\t"
+        "mtc0 $t0, $12\n\t"
+        "nop\n\t"
+        ::: "t0", "memory"
+    );
+}
+
+#define portDISABLE_INTERRUPTS() vPortDisableInterrupts()
+#define portENABLE_INTERRUPTS()  vPortEnableInterrupts()
 
 /* Yield definition. */
 extern void vPortYield( void );
