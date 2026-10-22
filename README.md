@@ -231,7 +231,7 @@ has never transmitted, so the cause is probably on the board itself. See
 | **2** | **Bidirectional serial console** | ✅ Output on the debug UART. Input goes through an SRAM mailbox written over SXS, because the debug host owns UART RX. Start it with `make shell`. |
 | **3** | **Onboard GPS (GK9501)** | 🟡 UART2 driver, VIBR LDO and 32 kHz clock power-on (vendor `GPS_Open`), NMEA reader task and GGA/RMC parser are all verified via UART2 loopback. The receiver on the test board has never produced data; see [GPS_NOTES.md](GPS_NOTES.md). |
 | **4** | **Watchdog and proper reset** | ✅ Vendor soft-reset sequence. The reset cause (power-on, soft, watchdog, host debug or RTC alarm) comes from the ROM's saved copy. A 4 s hardware watchdog is fed from the idle task (`wdt`; `hang` to test it). |
-| **5** | **CPU clock / PLL** | ✅ The ROM leaves the CPU on the 26 MHz crystal (19.5 MIPS measured). The vendor PLL sequence now runs it at 250 MHz by default (about 166 MIPS). As in the vendor's `boot_SysSetupPLL`, the memory bridge and SPI flash move to the PLL with it, which roughly doubles flash read speed. The ISPI (PMU bus) divider follows the system clock. 312 MHz is selectable but not reliable without core-voltage scaling (see Known issues). `clock`, `clock set <MHz>`. |
+| **5** | **CPU clock / PLL** | ✅ The ROM leaves the CPU on the 26 MHz crystal (19.5 MIPS measured). The vendor PLL sequence now runs it at 250 MHz by default (about 166 MIPS). As in the vendor's `boot_SysSetupPLL`, the memory bridge and SPI flash move to the PLL with it, which roughly doubles flash read speed. The ISPI (PMU bus) divider follows the system clock. Before raising the clock, the core supply (PMU `0x4B` `Vbuck1_ldo_bit_nlp`) goes from the ROM's code 8 to the vendor's operating code 6 (smaller is higher voltage), as `pmd_SetVcoreToDefaultVolt` does. 312 MHz (about 206 MIPS) is opt-in with `cfg clock 312` (see Known issues). `clock`, `clock set <MHz>`. |
 | **6** | **RTC / calendar** | ✅ Calendar block at `0xA1A0A000`. Encodings were verified on hardware: 1-based day and month, hardware leap years, ISO weekday 1–7. One-shot alarm through `SYS_IRQ_CALENDAR`. The time survives reboots and reflashes, but not a power-off (no battery). `date`, `alarm`; `--set-time` syncs it from the PC. |
 | **7** | **Flash storage** | ✅ The firmware erases and programs flash while running from it, using SRAM-resident routines (`.ramfunc`) with interrupts off. Writes are confined to `0x380000–0x38FFFF`, so the firmware and the factory calibration can never be touched. A CRC-checked settings record (boot clock, watchdog, note) is applied at boot. `cfg …`, `flash test`. |
 | **8** | **GPADC** | 🟡 8-channel 10-bit ADC. The per-chip two-point calibration is read from the PMU eFuse. Each read selects the fastest conversion interval, drops the stale result and averages 8. Channel 7 is VBAT. Not yet checked against a known voltage on an external pin; the channel-to-pin mapping is unconfirmed. `adc`. |
@@ -263,15 +263,15 @@ that need extra hardware are marked.
 
 ### Known issues
 
-- **312 MHz is unstable.** The "memory corruption" seen earlier (statics such as the
+- **312 MHz is opt-in.** The "memory corruption" seen earlier (statics such as the
   reset cause and GPADC calibration overwritten with SRAM addresses, hangs in
   `flash test`, watchdog reboots) turned out to be the CPU running at 312 MHz on the
-  boot core voltage. The vendor raises VCORE (`pmd_SetCoreVoltage*`) before high
-  clocks; a9_free does not yet. With the same binary and only the saved boot clock
-  changed, 26, 104, 156, 208 and 250 MHz ran clean (no faults, no reboots, every
-  `flash test` passing), while 312 MHz faulted on 6 of 6 boots. The default is
-  therefore 250 MHz, and `clock set`/`cfg clock` warn above it. VCORE scaling is
-  future work.
+  ROM's core voltage. With the same binary and only the saved boot clock changed,
+  26 to 250 MHz ran clean while 312 MHz faulted on 6 of 6 boots. The firmware now
+  sets the vendor's core voltage at boot (PMU `0x4B[11:8]` = 6, the highest level the
+  vendor firmware uses). With it, 312 MHz passed 35 of 36 boots (one silent reboot)
+  and a 4-minute soak. 250 MHz has never failed, so it stays the default; going past
+  the vendor's voltage was not tried.
 - Non-interrupt exceptions (address, bus, reserved-instruction errors) used to be
   treated as interrupts: the handler returned to the faulting instruction and looped,
   and each pass overwrote the current task's saved stack pointer, which turned a

@@ -9,10 +9,10 @@
  * Sel_Clock, Cfg_Clk_Sys in 8955_hard.xml). The system, memory bridge and SPI
  * flash clocks move to the PLL together, as boot_SysSetupPLL does.
  *
- * 312 MHz is not reliable at the boot core voltage: the vendor raises VCORE
- * (pmd_SetCoreVoltage*) before high clocks and we do not yet, and at 312 MHz the
- * firmware takes random address/bus/reserved-instruction faults within seconds.
- * 26..250 MHz ran clean in testing; the default is 250 MHz.
+ * 312 MHz needs the vendor's core voltage (pmu_set_vcore(6), done in main before
+ * the clock goes up): at the ROM's level it faulted on every boot, at the vendor
+ * level it passed 35 of 36 boots and a 4-minute soak. 26..250 MHz never failed,
+ * so 250 MHz stays the default and 312 MHz is opt-in.
  */
 #define CLOCK_SAFE_MAX_MHZ  250
 

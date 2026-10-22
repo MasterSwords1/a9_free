@@ -376,7 +376,7 @@ static void cli_handle_command(char *cmd)
     } else if (str_starts_with(cmd, "cfg clock ")) {
         s_cfg.clock_mhz = parse_dec(cmd + 10);
         uart_puts("clock -> "); print_dec(s_cfg.clock_mhz); uart_puts(" MHz (cfg save, then reboot)\r\n");
-        if (s_cfg.clock_mhz > CLOCK_SAFE_MAX_MHZ) uart_puts("Warning: unstable above 250 MHz without VCORE scaling\r\n");
+        if (s_cfg.clock_mhz > CLOCK_SAFE_MAX_MHZ) uart_puts("Note: 312 MHz passed 35 of 36 boot tests; 250 MHz never failed\r\n");
     } else if (str_starts_with(cmd, "cfg wdt ")) {
         s_cfg.wdt_ms = parse_dec(cmd + 8);
         uart_puts("wdt -> "); print_dec(s_cfg.wdt_ms); uart_puts(" ms (cfg save, then reboot)\r\n");
@@ -548,7 +548,7 @@ static void cli_handle_command(char *cmd)
         uint32_t got = clock_set_sys_mhz(want);
         if (got) {
             uart_puts("System clock: "); print_dec(got); uart_puts(" MHz\r\n");
-            if (got > CLOCK_SAFE_MAX_MHZ) uart_puts("Warning: unstable above 250 MHz without VCORE scaling\r\n");
+            if (got > CLOCK_SAFE_MAX_MHZ) uart_puts("Note: above the 250 MHz default; needs VCORE code 6 (pmu 4b)\r\n");
         }
         else uart_puts("Unsupported; use 26 39 52 78 89 104 113 125 139 156 178 208 250 312\r\n");
     } else if (str_eq(cmd, "sleep") || str_eq(cmd, "sleep on") || str_eq(cmd, "sleep off")) {
@@ -702,6 +702,10 @@ int main(void)
 
     /* Persistent settings (defaults: 250 MHz, 4 s watchdog) */
     s_cfg_loaded = settings_load(&s_cfg);
+
+    /* Core supply to the vendor's operating level before any clock goes up */
+    pmu_set_vcore(PMU_VCORE_VENDOR_HIGH);
+    for (uint32_t t0 = HW_TIMER_UPTIME; HW_TIMER_UPTIME - t0 < 17; );   /* ~1 ms */
 
     /* The ROM leaves the PLL off and the CPU on the 26 MHz crystal */
     if (!clock_set_sys_mhz(s_cfg.clock_mhz))

@@ -44,3 +44,22 @@ void pmu_write(uint16_t reg, uint16_t val)
     ispi_wait_idle();
     taskEXIT_CRITICAL();
 }
+
+#define PMU_REG_VBUCK1      0x4B
+#define VBUCK1_NLP_SHIFT    8
+#define VBUCK1_NLP_MASK     (0xFu << VBUCK1_NLP_SHIFT)
+
+unsigned pmu_get_vcore(void)
+{
+    return (pmu_read(PMU_REG_VBUCK1) & VBUCK1_NLP_MASK) >> VBUCK1_NLP_SHIFT;
+}
+
+int pmu_set_vcore(unsigned code)
+{
+    if (code < PMU_VCORE_VENDOR_HIGH || code > PMU_VCORE_BOOT)
+        return -1;
+    uint16_t v = pmu_read(PMU_REG_VBUCK1);
+    v = (uint16_t)((v & ~VBUCK1_NLP_MASK) | (code << VBUCK1_NLP_SHIFT));
+    pmu_write(PMU_REG_VBUCK1, v);
+    return pmu_read(PMU_REG_VBUCK1) == v ? 0 : -1;
+}
