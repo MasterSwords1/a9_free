@@ -26,6 +26,8 @@
 
 #define SEL_SYS_SLOW        (1u << 1)
 #define SEL_PLL_LOCKED      (1u << 8)
+#define SEL_SPIFLASH_SLOW   (1u << 10)
+#define SEL_MEM_BRIDGE_SLOW (1u << 11)
 
 /* Cfg_Clk_Sys.Sys_Freq index -> MHz */
 static const uint16_t s_sys_freq_mhz[14] = {
@@ -50,6 +52,24 @@ static void ispi_update_divider(uint32_t mhz)
     uint32_t n = (mhz + 25) / 26;
     n = n ? n - 1 : 0;
     REG_ISPI_CFG = (REG_ISPI_CFG & ISPI_DIV_KEEP_MASK) | ((n & 0x3FF) << 16);
+}
+
+/*
+ * Move the system, memory bridge and SPI flash clocks onto the PLL together, as
+ * the vendor's boot_SysSetupPLL does (it clears all of Sel_Clock), instead of
+ * leaving the memory bridge and flash on the 26 MHz slow clock. The domains keep
+ * their own dividers (Cfg_Clk_Mem_Bridge 78 MHz, Cfg_Clk_SpiFlash 52 MHz with the
+ * ROM's SPI clk_divider 8); flash reads get about twice as fast.
+ *
+ * Runs from SRAM: it retimes the path code is fetched through. No calls, no
+ * .rodata.
+ */
+__attribute__((section(".ramfunc"), noinline))
+static void ram_select_pll(uint32_t idx)
+{
+    REG_CFG_CLK_SYS = idx;
+    REG_SEL_CLOCK = REG_SEL_CLOCK & ~(SEL_SYS_SLOW | SEL_SPIFLASH_SLOW | SEL_MEM_BRIDGE_SLOW);
+    for (volatile int d = 0; d < 10; d++);
 }
 
 uint32_t clock_set_sys_mhz(uint32_t mhz)
@@ -79,8 +99,7 @@ uint32_t clock_set_sys_mhz(uint32_t mhz)
             while (!(REG_SEL_CLOCK & SEL_PLL_LOCKED));
             REG_PLL_CTRL |= PLL_CLK_FAST_ENABLE;
         }
-        REG_CFG_CLK_SYS = (uint32_t)idx;
-        REG_SEL_CLOCK = REG_SEL_CLOCK & ~SEL_SYS_SLOW;
+        ram_select_pll((uint32_t)idx);
     }
     for (volatile int d = 0; d < 10; d++);
     if (mhz <= old_mhz)

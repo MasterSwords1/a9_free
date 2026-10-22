@@ -376,6 +376,7 @@ static void cli_handle_command(char *cmd)
     } else if (str_starts_with(cmd, "cfg clock ")) {
         s_cfg.clock_mhz = parse_dec(cmd + 10);
         uart_puts("clock -> "); print_dec(s_cfg.clock_mhz); uart_puts(" MHz (cfg save, then reboot)\r\n");
+        if (s_cfg.clock_mhz > CLOCK_SAFE_MAX_MHZ) uart_puts("Warning: unstable above 250 MHz without VCORE scaling\r\n");
     } else if (str_starts_with(cmd, "cfg wdt ")) {
         s_cfg.wdt_ms = parse_dec(cmd + 8);
         uart_puts("wdt -> "); print_dec(s_cfg.wdt_ms); uart_puts(" ms (cfg save, then reboot)\r\n");
@@ -545,7 +546,10 @@ static void cli_handle_command(char *cmd)
     } else if (str_starts_with(cmd, "clock set ")) {
         uint32_t want = parse_dec(cmd + 10);
         uint32_t got = clock_set_sys_mhz(want);
-        if (got) { uart_puts("System clock: "); print_dec(got); uart_puts(" MHz\r\n"); }
+        if (got) {
+            uart_puts("System clock: "); print_dec(got); uart_puts(" MHz\r\n");
+            if (got > CLOCK_SAFE_MAX_MHZ) uart_puts("Warning: unstable above 250 MHz without VCORE scaling\r\n");
+        }
         else uart_puts("Unsupported; use 26 39 52 78 89 104 113 125 139 156 178 208 250 312\r\n");
     } else if (str_eq(cmd, "sleep") || str_eq(cmd, "sleep on") || str_eq(cmd, "sleep off")) {
         if (cmd[5] == ' ') { sys_sleep_enable(cmd[7] == 'n'); sys_sleep_stats_reset(); }
@@ -696,12 +700,12 @@ int main(void)
     sys_init();
     hardware_init();
 
-    /* Persistent settings (defaults: 312 MHz, 4 s watchdog) */
+    /* Persistent settings (defaults: 250 MHz, 4 s watchdog) */
     s_cfg_loaded = settings_load(&s_cfg);
 
     /* The ROM leaves the PLL off and the CPU on the 26 MHz crystal */
     if (!clock_set_sys_mhz(s_cfg.clock_mhz))
-        clock_set_sys_mhz(312);
+        clock_set_sys_mhz(CLOCK_SAFE_MAX_MHZ);
 
     send_host_event(0xBA5E0001);
 

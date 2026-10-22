@@ -78,6 +78,9 @@ RAMINL int spi_write_enable(void)
 
 RAMINL void spi_manual(int on)
 {
+    /* As the vendor does: let an in-flight AHB read (e.g. the fetch of the code
+     * that called us) finish before switching modes, or the controller wedges. */
+    spi_wait_idle();
     if (on) SPI_AHB_CTRL |= 0x10;
     else    SPI_AHB_CTRL &= ~0x11u;
 }

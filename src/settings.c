@@ -4,6 +4,7 @@
 
 #include "settings.h"
 #include "flash.h"
+#include "clock.h"
 
 #define SETTINGS_ADDR  FLASH_STORAGE_BASE
 
@@ -27,7 +28,7 @@ void settings_defaults(settings_t *s)
 {
     uint8_t *p = (uint8_t *)s;
     for (unsigned i = 0; i < sizeof(*s); i++) p[i] = 0;
-    s->clock_mhz = 312;
+    s->clock_mhz = CLOCK_SAFE_MAX_MHZ;
     s->wdt_ms = 4000;
 }
 

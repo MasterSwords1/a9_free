@@ -114,11 +114,34 @@ static void prvSetupTimerInterrupt(void)
 }
 
 /*
+ * A non-interrupt exception (address/bus error, break, ...). Returning would
+ * re-run the faulting instruction forever, and every pass through the IRQ entry
+ * rewrites the current task's saved stack pointer. Report it and stop with
+ * interrupts off; the watchdog, when armed, resets the chip.
+ */
+static void prvFatalException(uint32_t cp0_cause)
+{
+    extern void *volatile pxCurrentTCB;
+    uint32_t *frame = *(uint32_t **)pxCurrentTCB;
+    send_host_event(0xDEAD0000u | ((cp0_cause >> 2) & 0x1F)); /* ExcCode */
+    send_host_event(frame[29]);                             /* EPC */
+    send_host_event(frame[30]);                             /* Status at the fault */
+    send_host_event(frame[16]);                             /* ra */
+    send_host_event((uint32_t)frame + 128);                 /* sp */
+    for (;;);
+}
+
+/*
  * C-level Hardware Exception & Interrupt Dispatcher
  * Called directly from _freertos_irq_entry in port_asm.S
  */
 void prvSystemInterruptHandler(void)
 {
+    uint32_t cp0_cause;
+    __asm__ volatile ("mfc0 %0, $13\n\tnop" : "=r"(cp0_cause));
+    if (cp0_cause & 0x7C)                /* ExcCode != 0: not an interrupt */
+        prvFatalException(cp0_cause);
+
     uint32_t cause = REG_SYS_IRQ_CAUSE;
 
     /* Bit 10: SYS_IRQ_OS_TIMER */

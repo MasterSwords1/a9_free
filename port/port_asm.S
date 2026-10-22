@@ -140,18 +140,24 @@ vPortYield:
     /*
      * Enter "exception form" first: IE/KU stack shifted left by two, IEc = 0.
      * This disables interrupts and records the caller's IE in IEp.
+     *
+     * Interrupts are still enabled until the mtc0, so this must not use k0/k1:
+     * an IRQ in between would return with k0 holding the resumed EPC, and the
+     * Status built from it could drop the task into user mode (every kernel
+     * access then faults with AdEL). t0/t1 are caller-saved (vPortYield is only
+     * reached through a C call) and the IRQ entry preserves them.
      */
-    mfc0  $k0, $12
-    li    $k1, ~0x3F
-    and   $k1, $k0, $k1
-    andi  $k0, $k0, 0x0F
-    sll   $k0, $k0, 2
-    or    $k0, $k0, $k1
-    mtc0  $k0, $12
+    mfc0  $t0, $12
+    li    $t1, ~0x3F
+    and   $t1, $t0, $t1
+    andi  $t0, $t0, 0x0F
+    sll   $t0, $t0, 2
+    or    $t0, $t0, $t1
+    mtc0  $t0, $12
     nop
 
     addiu $sp, $sp, -FRAME_SIZE
-    sw    $k0, FRAME_STATUS($sp)
+    sw    $t0, FRAME_STATUS($sp)
     sw    $ra, FRAME_EPC($sp)    /* resume at the caller */
     SAVE_GPRS
 
