@@ -620,6 +620,10 @@ static void cli_handle_command(char *cmd)
         uart_puts("Playing 500 ms audio test tone (950 Hz)...\r\n");
         audio_beep(500);
         uart_puts("Done.\r\n");
+    } else if (str_eq(cmd, "audio play") || str_eq(cmd, "audio weather") || str_eq(cmd, "audio remark")) {
+        uart_puts("Now playing: 'A Remark You Made' - Weather Report (Jaco Pastorius theme)...\r\n");
+        audio_play_weather_report();
+        uart_puts("Playback complete.\r\n");
     } else if (str_starts_with(cmd, "audio tone ")) {
         uint32_t tone = parse_dec(cmd + 11);
         audio_tone_play((uint8_t)tone, 3);

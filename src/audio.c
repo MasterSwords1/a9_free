@@ -254,3 +254,54 @@ void audio_beep(uint32_t duration_ms)
     audio_tone_stop();
     audio_speaker_enable(false);
 }
+
+typedef struct {
+    uint16_t div;
+    uint16_t dur_ms;
+} note_t;
+
+/* "A Remark You Made" - Weather Report (Opening Jaco Pastorius fretless theme) */
+static const note_t k_weather_report[] = {
+    {165, 400},  /* E4 */
+    {124, 800},  /* A4 */
+    {131, 350},  /* G#4 */
+    {147, 350},  /* F#4 */
+    {165, 700},  /* E4 */
+    {0,   150},  /* rest */
+    {196, 400},  /* C#4 */
+    {185, 800},  /* D4 */
+    {196, 350},  /* C#4 */
+    {220, 350},  /* B3 */
+    {247, 900},  /* A3 */
+    {0,   200},  /* rest */
+    {220, 400},  /* B3 */
+    {196, 400},  /* C#4 */
+    {185, 400},  /* D4 */
+    {165, 800},  /* E4 */
+    {147, 400},  /* F#4 */
+    {124, 1200}, /* A4 */
+    {0,   0}
+};
+
+void audio_play_weather_report(void)
+{
+    audio_speaker_enable(true);
+    REG_AIF_CTRL = 1;
+
+    for (int i = 0; k_weather_report[i].dur_ms > 0; i++) {
+        uint16_t div = k_weather_report[i].div;
+        uint16_t dur = k_weather_report[i].dur_ms;
+        if (div == 0) {
+            REG_AIF_TONE = 0;
+        } else {
+            REG_SYS_CTRL_AIF_DIV = (1u << 16) | (1u << 13) | div;
+            REG_AIF_TONE = (3u << 12) | (0u << 8) | (1u << 1) | 1u;
+        }
+        vTaskDelay((dur + 5) / 10);
+        REG_AIF_TONE = 0;
+        vTaskDelay(3); /* 30 ms articulation gap */
+    }
+
+    audio_tone_stop();
+    audio_speaker_enable(false);
+}

@@ -27,5 +27,6 @@ uint8_t  audio_get_volume(void);
 void     audio_tone_play(uint8_t tone_id, uint8_t gain);
 void     audio_tone_stop(void);
 void     audio_beep(uint32_t duration_ms);
+void     audio_play_weather_report(void);
 
 #endif /* AUDIO_H */
