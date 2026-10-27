@@ -6,6 +6,7 @@
  */
 
 #include "audio.h"
+#include "pmu.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -73,6 +74,7 @@ void abb_write(uint16_t reg, uint16_t val)
 #define ABB_REG_CODEC_SET_2   0x03
 #define ABB_REG_MODE_SEL      0x0C
 #define ABB_REG_POWER_CTRL    0x0E
+#define ABB_REG_RESET_CTRL    0x0F
 #define ABB_REG_CODEC_EN      0x129
 #define ABB_REG_DAC_VOL       0x12A
 
@@ -81,10 +83,21 @@ static bool    s_speaker_en = false;
 
 void audio_init(void)
 {
-    /* 1. Enable AIF clock in SYS_CTRL: enable strobe (bit 16), update (bit 13), divider 128 */
+    /*
+     * 1. PMU Power Rails:
+     * - PMU Reg 0x04: Set pu_vboost_act (bit 5) to power the speaker amplifier boost converter.
+     * - PMU Reg 0x03: Clear pd_vasw_act (bit 9) and pd_va_act (bit 10) to power the analog codec/switch.
+     */
+    uint16_t pmu_04 = pmu_read(0x04);
+    pmu_write(0x04, pmu_04 | (1u << 5));
+
+    uint16_t pmu_03 = pmu_read(0x03);
+    pmu_write(0x03, pmu_03 & ~((1u << 9) | (1u << 10)));
+
+    /* 2. Enable AIF clock in SYS_CTRL: enable strobe (bit 16), update (bit 13), divider 128 */
     REG_SYS_CTRL_AIF_DIV = (1u << 16) | (1u << 13) | 128;
 
-    /* 2. Configure AIF digital interface: master mode, load_pos 14, clear data/tone */
+    /* 3. Configure AIF digital interface: master mode, load_pos 14, clear data/tone */
     REG_AIF_CTRL = 0;
     REG_AIF_SERIAL_CTRL = (1u << 4); /* Master mode */
     REG_AIF_LOAD_POS = 14;
@@ -92,18 +105,42 @@ void audio_init(void)
     REG_AIF_SIDE_TONE = 0;
     REG_AIF_CTRL = 1; /* Enable AIF */
 
-    /* 3. Configure ABB analog codec: mode sel, power, and clock */
-    abb_write(ABB_REG_MODE_SEL, 0x8A00);
-    abb_write(ABB_REG_POWER_CTRL, 0x0033); /* DAC enable, Codec reset deasserted */
+    /*
+     * 4. Complete ABB Analog Codec Initialization (REA verified from hal_AbbOpen):
+     */
+    abb_write(ABB_REG_RESET_CTRL, 0x0000); /* Reset ABB logic */
+    abb_write(ABB_REG_RESET_CTRL, 0x0003); /* Deassert reset */
+    abb_write(ABB_REG_POWER_CTRL, 0x0033); /* Power control: DAC enable, codec reset deasserted */
+    abb_write(ABB_REG_MODE_SEL, 0x8A00);   /* Standard DAC mode */
+    abb_write(0x05, 0x8200);
+    abb_write(0x0A, 0x4630);               /* codec_ldo_setting_2: vcom/vref biases + class-G PA */
+    abb_write(0x0B, 0x8000);
+    abb_write(0x11, 0xC0BC);
+    abb_write(0x13, 0xC002);
+    abb_write(0x14, 0x0030);
+    abb_write(0x17, 0x0040);
+    abb_write(0x09, 0x00C0);               /* codec_ldo_setting_1: PA enable bias + discharge disable */
 
     /* Enable digital codec logic: s_codec_en (bit 2) | s_dwa_en (bit 11) */
     abb_write(ABB_REG_CODEC_EN, 0x0804);
 
-    /* Codec settings 1: controlled by ABB (bit 15), deep_pd_n (14), ref_pd_n (13), dac_pd_n (10), spk_sel (2) */
-    abb_write(ABB_REG_CODEC_SET_1, (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) | (1u << 2));
+    /*
+     * Codec settings 1:
+     * - bit 15: controlled by ABB
+     * - bit 14: au_deep_pd_n (power on)
+     * - bit 13: au_ref_pd_n (bias on)
+     * - bit 10: au_dac_pd_n (DAC on)
+     * - bit 2:  au_spk_sel (Speaker PA on SPKP/SPKN)
+     * - bit 1:  au_rcv_sel (Receiver on RCVP/RCVN)
+     * - bit 0:  au_head_sel (Headphone on HEAD_L/HEAD_R)
+     * Enable all three output paths simultaneously so audio is present on header pins & jack.
+     */
+    abb_write(ABB_REG_CODEC_SET_1, (1u << 15) | (1u << 14) | (1u << 13) | (1u << 10) |
+                                   (1u << 2)  | (1u << 1)  | (1u << 0));
 
-    /* Codec settings 2: mono (bit 14), muted initially (bit 13 = 0), dac_reset_n (bit 12), gain */
-    abb_write(ABB_REG_CODEC_SET_2, (1u << 14) | (0u << 13) | (1u << 12) | ((s_volume & 0x0F) << 8));
+    /* Codec settings 2: mono (bit 14), muted initially (bit 13 = 0), dac_reset_n (bit 12) */
+    abb_write(ABB_REG_CODEC_SET_2, (1u << 14) | (0u << 13) | (1u << 12) |
+                                   ((s_volume & 0x0F) << 8) | ((s_volume & 0x0F) << 4) | (s_volume & 0x0F));
 
     /* DAC volume register: 0xFC00 top bits + volume code */
     abb_write(ABB_REG_DAC_VOL, 0xFC00 | (24 << 2));
@@ -118,7 +155,8 @@ uint16_t audio_get_chip_id(void)
 void audio_speaker_enable(bool en)
 {
     s_speaker_en = en;
-    uint16_t val = (1u << 14) | (1u << 12) | ((s_volume & 0x0F) << 8);
+    uint16_t val = (1u << 14) | (1u << 12) |
+                   ((s_volume & 0x0F) << 8) | ((s_volume & 0x0F) << 4) | (s_volume & 0x0F);
     if (en) {
         val |= (1u << 13); /* Unmute */
     }
