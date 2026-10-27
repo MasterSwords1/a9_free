@@ -613,9 +613,28 @@ static void cli_handle_command(char *cmd)
         uint16_t id = audio_get_chip_id();
         uart_puts("Audio Subsystem:\r\n");
         uart_puts("  ABB Chip ID: "); print_hex(id); uart_puts("\r\n");
-        uart_puts("  Speaker PA: "); uart_puts(audio_speaker_is_enabled() ? "ENABLED\r\n" : "MUTED\r\n");
-        uart_puts("  Volume: "); print_dec(audio_get_volume()); uart_puts(" / 15\r\n");
-        uart_puts("  Commands: audio beep | audio tone <0..15> | audio vol <0..15> | audio spk on|off | audio stop\r\n");
+        uart_puts("  Speaker PA:  "); uart_puts(audio_speaker_is_enabled() ? "ENABLED\r\n" : "MUTED\r\n");
+        uart_puts("  Volume:      "); print_dec(audio_get_volume()); uart_puts(" / 15\r\n");
+        uart_puts("  CodecSet 1 (0x02):  "); print_hex(abb_read(0x02)); uart_puts("\r\n");
+        uart_puts("  CodecSet 2 (0x03):  "); print_hex(abb_read(0x03)); uart_puts("\r\n");
+        uart_puts("  CodecEn   (0x129):  "); print_hex(abb_read(0x129)); uart_puts("\r\n");
+        uart_puts("  DacVol    (0x12A):  "); print_hex(abb_read(0x12A)); uart_puts("\r\n");
+        uart_puts("  PMU VBOOST(0x04):   "); print_hex(pmu_read(0x04)); uart_puts("\r\n");
+        uart_puts("  PMU VASW  (0x03):   "); print_hex(pmu_read(0x03)); uart_puts("\r\n");
+        uart_puts("  Pins: SPK_P / SPK_N (top header pins 1 & 2)\r\n");
+        uart_puts("  Commands: audio beep | audio play | audio tone <0..15> | audio vol <0..15> | audio spk on|off | audio reg <hex> [val]\r\n");
+    } else if (str_starts_with(cmd, "audio reg ")) {
+        const char *p = cmd + 10;
+        uint16_t reg = (uint16_t)parse_hex(p);
+        while (*p && *p != ' ') p++;
+        if (*p == ' ') {
+            uint16_t val = (uint16_t)parse_hex(p + 1);
+            abb_write(reg, val);
+            uart_puts("ABB Reg "); print_hex(reg); uart_puts(" <= "); print_hex(val); uart_puts("\r\n");
+        } else {
+            uint16_t val = abb_read(reg);
+            uart_puts("ABB Reg "); print_hex(reg); uart_puts(" == "); print_hex(val); uart_puts("\r\n");
+        }
     } else if (str_eq(cmd, "audio beep")) {
         uart_puts("Playing 500 ms audio test tone (950 Hz)...\r\n");
         audio_beep(500);

@@ -31,14 +31,40 @@ static void ispi_wait_idle(void)
     } while ((s & ISPI_BUSY) || ISPI_TX_SPACE(s) != 16);
 }
 
-uint16_t abb_read(uint16_t reg)
+static void ispi_raw_write(uint16_t reg, uint16_t val)
 {
-    taskENTER_CRITICAL();
+    while (ISPI_TX_SPACE(REG_ISPI_STATUS) == 0);
+    REG_ISPI_FIFO = ISPI_WRITE_CS1 | (((uint32_t)(reg) & 0x1FF) << 16) | (val & 0xFFFF);
+    ispi_wait_idle();
+}
+
+static uint16_t ispi_raw_read(uint16_t reg)
+{
     while (ISPI_TX_SPACE(REG_ISPI_STATUS) == 0);
     REG_ISPI_FIFO = ISPI_READ_CS1 | (((uint32_t)(reg) & 0x1FF) << 16);
     ispi_wait_idle();
     while (ISPI_RX_LEVEL(REG_ISPI_STATUS) == 0);
-    uint16_t v = (uint16_t)(REG_ISPI_FIFO & 0xFFFF);
+    return (uint16_t)(REG_ISPI_FIFO & 0xFFFF);
+}
+
+static uint8_t s_abb_page = 0;
+
+static void abb_select_page(uint16_t reg)
+{
+    uint8_t target_page = (reg >= 32) ? 1 : 0;
+    if (s_abb_page != target_page) {
+        ispi_raw_write(0x1F, target_page);
+        s_abb_page = target_page;
+    }
+}
+
+uint16_t abb_read(uint16_t reg)
+{
+    taskENTER_CRITICAL();
+    if (reg != 0x1F) {
+        abb_select_page(reg);
+    }
+    uint16_t v = ispi_raw_read(reg);
     taskEXIT_CRITICAL();
     return v;
 }
@@ -46,9 +72,7 @@ uint16_t abb_read(uint16_t reg)
 void abb_write(uint16_t reg, uint16_t val)
 {
     taskENTER_CRITICAL();
-    while (ISPI_TX_SPACE(REG_ISPI_STATUS) == 0);
-    REG_ISPI_FIFO = ISPI_WRITE_CS1 | (((uint32_t)(reg) & 0x1FF) << 16) | (val & 0xFFFF);
-    ispi_wait_idle();
+    ispi_raw_write(reg, val);
     taskEXIT_CRITICAL();
 }
 
@@ -159,6 +183,10 @@ void audio_speaker_enable(bool en)
                    ((s_volume & 0x0F) << 8) | ((s_volume & 0x0F) << 4) | (s_volume & 0x0F);
     if (en) {
         val |= (1u << 13); /* Unmute */
+        uint8_t dac_v = (s_volume >= 15) ? 31 : (s_volume * 2);
+        abb_write(ABB_REG_DAC_VOL, 0xFC00 | ((dac_v & 0x1F) << 2));
+    } else {
+        abb_write(ABB_REG_DAC_VOL, 0xFC80); /* Mute DAC volume (bit 7) */
     }
     abb_write(ABB_REG_CODEC_SET_2, val);
 }
