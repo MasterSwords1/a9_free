@@ -82,10 +82,13 @@ flash: $(TARGET).bin
 monitor:
 	$(FLASHER) --monitor --passive --monitor-time 20
 
+monitor-raw:
+	$(FLASHER) --raw --monitor-time 30
+
 shell:
 	$(FLASHER) --shell --passive
 
 clean:
 	rm -f $(TARGET).elf $(TARGET).bin $(TARGET).asm
 
-.PHONY: all clean flash monitor shell disasm
+.PHONY: all clean flash monitor monitor-raw shell disasm

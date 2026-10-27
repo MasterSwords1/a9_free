@@ -578,10 +578,46 @@ def run_entry(target: SerialTarget, entry_point: int, sp: int = 0x81C07F00) -> N
     print(f"[+] Executing at 0x{entry_point:08X}...")
 
 
+def raw_stream(port: str, baud: int, duration: float = 20.0) -> None:
+    """Raw 8N1 UART listener for firmware output without SXS framing."""
+    print(f"[-] Opening {port} in RAW 8N1 mode (baud: {baud})...")
+    time.sleep(0.2)
+    try:
+        ser = serial.Serial(port, baud, timeout=0.05, xonxoff=False, rtscts=False, dsrdtr=False)
+    except serial.SerialException as exc:
+        print(f"[!] Could not open raw port: {exc}")
+        return
+    ser.reset_input_buffer()
+    t_start = time.time()
+    print("=" * 60)
+    print(f"  FIRMWARE RAW UART OUTPUT ({duration:.1f}s, Ctrl-C to stop)")
+    print("=" * 60)
+    try:
+        while time.time() - t_start < duration:
+            n = ser.in_waiting
+            if n:
+                data = ser.read(n)
+                sys.stdout.write(data.decode("ascii", errors="replace"))
+                sys.stdout.flush()
+            else:
+                time.sleep(0.005)
+    except KeyboardInterrupt:
+        print("\n[*] Raw UART monitor interrupted.")
+    finally:
+        ser.close()
+
+
 def stream_traces(target: SerialTarget, duration: float = 20.0) -> None:
     import re
     print("[-] Checking target stream & host events...")
     print(f"=== LIVE RDA8955 SYSTEM & APPLICATION TRACE MONITOR ({duration:.1f}s) ===")
+
+    def sink(b: bytes) -> None:
+        sys.stdout.write(b.decode("ascii", errors="replace"))
+        sys.stdout.flush()
+
+    old_sink = target.text_sink
+    target.text_sink = sink
     t_start = time.time()
     try:
         while time.time() - t_start < duration:
@@ -619,14 +655,10 @@ def stream_traces(target: SerialTarget, duration: float = 20.0) -> None:
                     if strings:
                         text = ' | '.join(s.decode('ascii', errors='ignore') for s in strings)
                         print(f"[{elapsed:05.2f}s] [0x{flow:02X}] {text}")
-            elif target.ser and target.ser.in_waiting > 0:
-                raw_bytes = target.ser.read(target.ser.in_waiting)
-                elapsed = time.time() - t_start
-                text = raw_bytes.decode('ascii', errors='ignore').strip()
-                if text:
-                    print(f"[{elapsed:05.2f}s] [RAW UART] {text}")
     except KeyboardInterrupt:
         print("\n[*] Trace monitor interrupted by user.")
+    finally:
+        target.text_sink = old_sink
 
 
 BOOT_SECTOR_MAGIC = 0xD9EF0045
@@ -725,8 +757,13 @@ def main() -> int:
     parser.add_argument("--send", action="append", default=[], metavar="CMD", help="Send CMD to the firmware CLI and print the response (repeatable)")
     parser.add_argument("--set-time", action="store_true", help="Set the target RTC from this PC's local clock (before any --send)")
     parser.add_argument("--listen", type=float, default=1.0, help="Seconds to collect output after each --send command (default: 1.0)")
+    parser.add_argument("--raw", action="store_true", help="Listen in raw 8N1 mode without SXS framing")
     parser.add_argument("--monitor-time", type=float, default=20.0, help="Trace monitor duration in seconds (default: 20s)")
     args = parser.parse_args()
+
+    if args.raw:
+        raw_stream(args.port, args.baud, duration=args.monitor_time)
+        return 0
 
     if args.set_time:
         from datetime import datetime, timedelta
@@ -784,8 +821,7 @@ def main() -> int:
             run_entry(target, args.run_entry)
         if args.monitor:
             if not args.execute and args.run_entry is None and not args.passive:
-                enter_host_monitor(target)
-                exit_host_monitor(target)
+                print("[-] Listening for target events/traces (use --passive to suppress reset)...")
             stream_traces(target, duration=args.monitor_time)
         if args.send:
             print(run_shell_script(target, args.send, listen=args.listen))
