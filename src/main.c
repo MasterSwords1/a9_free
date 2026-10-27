@@ -23,6 +23,7 @@
 #include "gpadc.h"
 #include "gpio.h"
 #include "pwm.h"
+#include "audio.h"
 
 extern void *memset(void *s, int c, size_t n);
 
@@ -93,6 +94,9 @@ static void hardware_init(void)
 
     /* Initialize Host Debug UART for raw 8N1 serial communication */
     uart_init();
+
+    /* Initialize AIF and ABB audio subsystems */
+    audio_init();
 }
 
 /*
@@ -288,6 +292,7 @@ static void cli_handle_command(char *cmd)
         uart_puts("  pwm <0..255>|off    - PWL1 on GPIO_2 (duty sensed on GPIO_3 via jumper)\r\n");
         uart_puts("  sleep [on|off]      - Idle light-sleep control and time-asleep stats\r\n");
         uart_puts("  reboot              - Soft-reset the whole chip\r\n");
+        uart_puts("  audio [info|beep|tone <0..15>|vol <0..15>|spk on|off|stop] - Audio driver & tone test\r\n");
         uart_puts("  wdt [on [ms]|off]   - Watchdog status / control (fed by the idle task)\r\n");
         uart_puts("  hang                - Spin with interrupts off (watchdog test)\r\n");
     } else if (str_eq(cmd, "status")) {
@@ -604,6 +609,35 @@ static void cli_handle_command(char *cmd)
         if (cmd[6] == ' ') ms = parse_dec(cmd + 7);
         wdt_start(ms);
         uart_puts("Watchdog running, timeout "); print_dec(wdt_timeout_ms()); uart_puts(" ms\r\n");
+    } else if (str_eq(cmd, "audio") || str_eq(cmd, "audio info")) {
+        uint16_t id = audio_get_chip_id();
+        uart_puts("Audio Subsystem:\r\n");
+        uart_puts("  ABB Chip ID: "); print_hex(id); uart_puts("\r\n");
+        uart_puts("  Speaker PA: "); uart_puts(audio_speaker_is_enabled() ? "ENABLED\r\n" : "MUTED\r\n");
+        uart_puts("  Volume: "); print_dec(audio_get_volume()); uart_puts(" / 15\r\n");
+        uart_puts("  Commands: audio beep | audio tone <0..15> | audio vol <0..15> | audio spk on|off | audio stop\r\n");
+    } else if (str_eq(cmd, "audio beep")) {
+        uart_puts("Playing 500 ms audio test tone (950 Hz)...\r\n");
+        audio_beep(500);
+        uart_puts("Done.\r\n");
+    } else if (str_starts_with(cmd, "audio tone ")) {
+        uint32_t tone = parse_dec(cmd + 11);
+        audio_tone_play((uint8_t)tone, 3);
+        uart_puts("Playing tone "); print_dec(tone); uart_puts(" (use 'audio stop' to end)\r\n");
+    } else if (str_eq(cmd, "audio stop")) {
+        audio_tone_stop();
+        audio_speaker_enable(false);
+        uart_puts("Audio tone stopped.\r\n");
+    } else if (str_starts_with(cmd, "audio vol ")) {
+        uint32_t vol = parse_dec(cmd + 10);
+        audio_set_volume((uint8_t)vol);
+        uart_puts("Volume set to "); print_dec(audio_get_volume()); uart_puts("\r\n");
+    } else if (str_eq(cmd, "audio spk on")) {
+        audio_speaker_enable(true);
+        uart_puts("Speaker output unmuted/enabled.\r\n");
+    } else if (str_eq(cmd, "audio spk off")) {
+        audio_speaker_enable(false);
+        uart_puts("Speaker output muted.\r\n");
     } else if (str_eq(cmd, "hang")) {
         uart_puts("Hanging with interrupts off; the watchdog should reset the chip...\r\n");
         vTaskDelay(pdMS_TO_TICKS(50));

@@ -60,6 +60,7 @@ APP_SRCS := start.S \
             src/gpadc.c \
             src/gpio.c \
             src/pwm.c \
+            src/audio.c \
             src/main.c
 
 TARGET := a9_free
