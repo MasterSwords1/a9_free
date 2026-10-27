@@ -237,12 +237,14 @@ has never transmitted, so the cause is probably on the board itself. See
 | **8** | **GPADC** | 🟡 8-channel 10-bit ADC. The per-chip two-point calibration is read from the PMU eFuse. Each read selects the fastest conversion interval, drops the stale result and averages 8. Channel 7 is VBAT. Not yet checked against a known voltage on an external pin; the channel-to-pin mapping is unconfirmed. `adc`. |
 | **9** | **GPIO interrupts and PWM** | 🟡 GPIO drive, read and pad mux, and rising/falling/debounce/level interrupts on both banks, are all verified (20 edges give 20 interrupts on GPIO 1, 3, 30, 32 and 34). PWL1 PWM on `GPIO_2` is **not physically verified**: the LED pads have no PWM function, so it needs a `GPIO_2 → GPIO_3` jumper. `gpio`, `gpio irqtest`, `pwm`. |
 | **10** | **Low-power sleep** | 🟡 The idle task gates the CPU clock (`Cpu_Sleep`, from SRAM, as the vendor `hal_LpsLightSleep` does). It wakes on the timer, GPIO or RTC, and sleeps about 80% of the time at idle with tick accuracy unchanged. The current draw has not been measured. `sleep`. |
+| **11** | **Audio subsystem (AIF + ABB Codec)** | ✅ Digital Audio Interface (`0xA1927000`) master mode, AIF clock strobe divider in `SYS_CTRL` (`0xA1A00064`), ISPI CS1 access to Analog Baseband Codec (`0xA2000500`) with register bank paging (`0x1F` `spi_out_sel`), PMU VBOOST boost converter (`0x04` bit 5), PMU VASW audio rail (`0x03` bit 9). DTMF & comfort tone generation, melody sequencer ("A Remark You Made" by Weather Report). Output routed to differential Speaker PA (`SPK_P` / `SPK_N`), Receiver (`RCV_P` / `RCV_N`), and Headphone (`HEAD_L` / `HEAD_R`). *Note: The Pudding board has an onboard electret microphone next to Micro USB, but NO soldered speaker. An external speaker/buzzer must be hooked to `SPK_P`/`SPK_N`.* `audio`. |
 
 Shell commands: `help`, `status`, `uptime`, `led blue|green on|off`, `peek`, `poke`,
 `gps on|off`, `gps`, `gps raw`, `pmu <reg>`, `pmuw <reg> <val>`, `wdt [on [ms]|off]`,
 `hang`, `clock`, `clock set <MHz>`, `u2baud`, `date [set …]`, `alarm [in <s>|off]`,
 `cfg [clock|wdt|note <v>|save|erase]`, `flash [test]`, `adc [ch|cal]`,
-`gpio <pin> [in|0|1]`, `gpio irqtest [pin]`, `pwm <0..255>|off`, `sleep [on|off]`, `reboot`.
+`gpio <pin> [in|0|1]`, `gpio irqtest [pin]`, `pwm <0..255>|off`, `sleep [on|off]`,
+`audio [info|beep|play|tone <0..15>|vol <0..15>|spk on/off|reg <hex> [val]]`, `reboot`.
 
 ---
 
